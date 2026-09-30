@@ -996,6 +996,57 @@ def test_one_shot_per_brilliant_and_blunder():
     assert a.name.startswith("brilliant_m14_ply27_")
 
 
+def test_two_screenshots_taken_in_the_same_second_get_different_files():
+    """The regression behind "it takes the screenshot but does not send it".
+
+    Every filename carries a second-resolution stamp, and a single turn takes
+    several pictures in a row -- "screenshots of move 12, 14 and 16", or the
+    same game twice. They all asked for the same name, so the second write
+    OVERWROTE the first, and the chat front end de-duplicates by path: three
+    requests, one file, one picture attached.
+
+    So the name has to advance until it is free, and it has to keep the shape
+    `discord_bot.describe_artifact` reads `\\d{8}_\\d{6}$` -- a counter appended
+    to the end would leave every interactive frame captioned "screenshot"
+    instead of "the board and the review panel".
+    """
+    from tools.common import unique_shot_path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        taken = []
+        for _ in range(3):
+            path = unique_shot_path(root, "shot_board", "20260101_120000")
+            taken.append(path)
+            path.write_bytes(b"PNG")
+        assert len(set(taken)) == 3, [p.name for p in taken]
+        for path in taken:
+            assert re.fullmatch(r"shot_board_\d{8}_\d{6}\.png", path.name), path.name
+        # a stamp that is not a timestamp still gets unique names
+        for _ in range(2):
+            path = unique_shot_path(root, "brilliant_m14_ply27_1", "20260101")
+            path.write_bytes(b"PNG")
+            assert path.exists()
+        names = {p.name for p in root.iterdir()}
+        assert len(names) == 5, names
+
+    # the review tool's own path helper goes through the same thing, so two
+    # calls for the SAME move in the same second cannot overwrite each other
+    import tools.review as rv
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original = rv._project_root
+        rv._project_root = lambda: Path(tmp)
+        try:
+            first = rv._shot_path("move", "1", "20260101_120000", "m14_ply27")
+            first.write_bytes(b"PNG")
+            second = rv._shot_path("move", "1", "20260101_120000", "m14_ply27")
+        finally:
+            rv._project_root = original
+        assert first != second
+        assert second.name.startswith("move_m14_ply27_1_"), second.name
+
+
 def test_there_is_no_separate_moves_screenshot():
     """The user asked for it to be dropped: summary + one frame per brilliant
     and per blunder, nothing else."""

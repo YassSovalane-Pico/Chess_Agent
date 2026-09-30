@@ -1,7 +1,16 @@
-"""Measure a minimal fixture: keep the facts the tests assert on, drop the bulk.
+"""Distil a page dump into the minimal fixture the tests read.
 
-The 2.7 MB of dumps is 99% SVG path data and inline JSON. The four
-dump-reading tests only assert structural facts:
+A full ``dump_pages.py`` capture is ~2.7 MB of HTML, 99% of it SVG path data
+and inline JSON. This reduces it to an ~18 KB fixture -- a reduction of roughly
+150x -- keeping every fact the dump-reading tests assert on and collapsing each
+``<svg>`` element to ``<svg/>``.
+
+The result is ``tests/fixtures/chess_com_review_markup.json``, and that fixture
+is what ``tests/test_review_logic.py`` actually reads, so the markup-pinned
+expectations stay live without 2.7 MB of HTML in the repo. The capture it came
+from is not needed: ``dumps/`` is gitignored and safe to delete.
+
+Those tests assert structural facts only, so exactly those are extracted:
 
   * the set of data-node values, and that they give plies 1..N with no gaps
   * the set of <g id=...> classification labels
@@ -10,7 +19,10 @@ dump-reading tests only assert structural facts:
   * how many of the 29 cells carry an annotation, and that the analysis board
     carries none
 
-So extract exactly those, with the SVG path data elided.
+To rebuild it from a fresh capture:
+
+    python dump_pages.py <chess.com game link>
+    python make_fixture.py
 """
 
 import json
@@ -31,12 +43,11 @@ def elide(s: str) -> str:
 
 
 def _read(name: str) -> str:
-    """Read one dump, or say how to get it.
+    """Read one dump, or say how to produce it.
 
-    A raw FileNotFoundError here would tell the user nothing except that a
-    file is missing, when the file they need is produced by a command they may
-    not have run since deleting dumps/ -- which is the normal state of this
-    directory.
+    dumps/ is gitignored and normally absent, so a missing file is the normal
+    state of a clean checkout rather than a fault; name the command that
+    produces it instead of letting FileNotFoundError surface.
     """
     path = D / name
     if path.exists():
@@ -100,9 +111,8 @@ coach = elide(
         re.S,
     ).group(0)
 )
-# The coach's prose is a <span class="move-feedback-speech-text-tw">, NOT a div,
-# which is why a div-shaped guess found nothing and the live tool read "You get"
-# instead of the sentence. Grab it by offset rather than by guessing its shape.
+# The coach's prose is a <span class="move-feedback-speech-text-tw">, not a div,
+# so grab it by offset from that class rather than by guessing its tag shape.
 _speech_at = started.find('class="move-feedback-speech-text-tw"')
 speech = started[_speech_at - 60 : _speech_at + 700] if _speech_at > 0 else None
 

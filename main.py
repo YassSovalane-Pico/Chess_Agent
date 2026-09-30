@@ -52,21 +52,19 @@ def main() -> None:
             print("Bye!")
             break
         try:
-            # The terminal keeps the old raw chat (not an AgentSession): one
+            # The terminal uses the raw chat, not an AgentSession: one
             # long-lived conversation is exactly what a terminal session is, and
-            # a mid-conversation reset would be baffling with no UI to explain it.
+            # a mid-conversation reset would be baffling with no UI to explain.
             answer, _tools, artifacts = run_agent(chat, user_input)
         except Exception as e:  # noqa: BLE001 - CLI boundary: keep the session alive
-            # Friendly error, keep the chat history for the next question.
             print(f"Agent error: {e}")
             print("Tip: if the model says 404/not found, it may be retired.")
             print(f"Try GEMINI_MODEL={MODEL_FALLBACK_HINT} in your .env\n")
             continue
         print(f"\nAgent:\n{answer}\n")
         for tool, path in artifacts:
-            # In a terminal a path is the only way to get at the picture, and the
-            # model has been told to print them itself -- so this is a
-            # belt-and-braces list rather than the only one.
+            # In a terminal a path is the only way to reach the picture, so this
+            # is a belt-and-braces list rather than the only one.
             print(f"  [{tool}] {path}")
         if artifacts:
             print()

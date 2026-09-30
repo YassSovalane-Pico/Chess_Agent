@@ -3,32 +3,31 @@
 Run once:
     python login_chess.py
 
-It opens a real Chrome window on the login page.
-Log in manually with your paid account (username + password + 2FA),
-then go back to the terminal and press Enter.
-Your session (cookies) is saved to storage_state.json.
+It opens a real Chrome window on the login page. Log in manually with your paid
+account (username + password + 2FA), then go back to the terminal and press
+Enter. Your session (cookies) is saved to storage_state.json.
 
-The real browser's User-Agent is recorded alongside it so tools/review.py
-replays the exact same fingerprint. Sending a session minted under one Chrome
-build back with a hardcoded "Chrome/126" header is a large part of why
-Cloudflare challenges a perfectly valid login.
+The real browser's User-Agent is recorded alongside it so the review tools
+replay the exact same fingerprint. A session minted under one Chrome build and
+replayed under a different User-Agent header is a large part of why Cloudflare
+challenges a perfectly valid login.
 
-After that, tools.review.review_game_screenshots() reuses the session
-without needing your password again.
+After that, review_game_screenshots() reuses the session without needing your
+password again.
 
-IMPORTANT: storage_state.json is like a password.
-It is already in .gitignore - never share it or commit it.
+IMPORTANT: storage_state.json is like a password. It is git-ignored -- never
+share it or commit it.
 """
 
 from tools.common import BROWSER_PROFILE_PATH, save_browser_profile, session_state_path
 
-# Cookies that only exist on a real chess.com login. If none of them are
-# present, saving the state would mint a session that the review tool then
-# reports as "Not logged in" much later with no clue why.
+# Cookies that only exist on a real chess.com login. Saving the state without
+# one of these mints a session the review tool later reports as "Not logged in"
+# with no clue why.
 _AUTH_COOKIES = ("PHPSESSID", "CHESSCOM_REMEMBERME", "me", "ACCESS_TOKEN")
 
-# Same anti-detection posture as the review run, so the session we mint here
-# is not created under a *different* fingerprint than the one we replay it in.
+# Same anti-detection posture as the review run, so the session is not created
+# under a different fingerprint than the one it is replayed in.
 LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--disable-dev-shm-usage",
@@ -57,8 +56,8 @@ def main() -> None:
     print("'Forgot password' to create one.\n")
 
     with sync_playwright() as p:
-        # Use the real installed Chrome when available: Google is less
-        # likely to flag it than Playwright's bundled Chromium.
+        # Real installed Chrome where available; Google is less likely to flag it
+        # than Playwright's bundled Chromium.
         browser = None
         try:
             browser = p.chromium.launch(
@@ -73,8 +72,8 @@ def main() -> None:
             context.add_init_script(HIDE_WEBDRIVER)
             page = context.new_page()
 
-            # Record the fingerprint this session is being created under, so
-            # the review tool can send the identical User-Agent later.
+            # Record the fingerprint this session is created under, so the
+            # review tool can send the identical User-Agent later.
             user_agent = page.evaluate("() => navigator.userAgent") or None
             if user_agent:
                 save_browser_profile(

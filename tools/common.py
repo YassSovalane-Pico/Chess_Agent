@@ -4,28 +4,23 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Bumped whenever the review flow changes shape. calibrate_review.py prints
-# this on every run: a whole debugging session once turned on "which build did
-# that output come from?", because a run was started before an edit landed.
+# this on every run so it is always clear which build produced an output.
 __version__ = "0.3.1"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Written by login_chess.py, read by tools/review.py. Keeps the User-Agent used
-# when the session cookie was created identical to the one used afterwards.
-# A session minted under Chrome 140 and replayed under a hardcoded "Chrome/126"
-# is exactly the kind of inconsistency Cloudflare scores.
+# when the session cookie was created identical to the one used afterwards; a
+# mismatch is something Cloudflare scores.
 BROWSER_PROFILE_PATH = PROJECT_ROOT / ".browser_profile.json"
 
-# storage_state.json holds a live chess.com ACCESS_TOKEN + PHPSESSID: anyone
-# holding the file has the account. It is git-ignored, but a git-ignore is not
-# much defence for a folder that also gets zipped and backed up, so the location
-# is overridable. Point CHESS_AGENT_STATE somewhere outside the checkout
-# (e.g. %LOCALAPPDATA%\chess-agent\storage_state.json) to keep the credential
-# out of the project tree entirely. The default is kept for compatibility.
+# storage_state.json holds a live chess.com ACCESS_TOKEN + PHPSESSID, so anyone
+# holding the file has the account. A git-ignore is thin protection for a
+# folder that also gets zipped and backed up, hence the override.
 STATE_PATH_ENV = "CHESS_AGENT_STATE"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "storage_state.json"
 
@@ -40,11 +35,69 @@ def session_state_path() -> Path:
     return Path(override) if override else DEFAULT_STATE_PATH
 
 
+# How long to keep stepping a colliding stamp before giving up. One step per
+# second, so this is a minute of frames written inside a single second, which is
+# far past anything a real turn produces -- it exists only so a directory full
+# of past screenshots cannot turn this into an unbounded loop.
+SHOT_NAME_ATTEMPTS = 60
+
+
+def unique_shot_path(directory: Path, stem: str, stamp: str) -> Path:
+    """A screenshot path in `directory` that no existing file occupies.
+
+    The second-resolution stamp is what made this necessary. A single turn asks
+    for several pictures in a row -- "screenshots of move 12, 14 and 16" -- and
+    every one of them was written in the same second to
+    ``shot_auto_<stamp>.png``. The second call therefore OVERWROTE the first
+    file, and because `agent.collect_artifacts` de-duplicates by path the chat
+    front end then had one picture to attach for three requests: the frames
+    were taken, on disk, and never sent. The tool has no way to tell the user
+    that, because from its point of view it succeeded twice.
+
+    The stamp is advanced by whole seconds rather than a counter appended to the
+    name, because the filename shape is load-bearing:
+    `discord_bot.describe_artifact` reads `shot_<region>[_<label>]_<stamp>.png`
+    with a regex anchored on `\\d{8}_\\d{6}$` to work out what a frame shows. A
+    free-standing suffix would leave every interactive screenshot captioned
+    "screenshot".
+
+    A stamp that is not a timestamp (a test, an old caller) cannot be advanced,
+    so it gets a numeric suffix instead. The path is returned, not written: the
+    caller writes it, exactly as before, and should do so before the next call.
+    That is not a lock, and does not need to be one -- the Discord front end
+    gates every screenshot tool behind the browser lock, and the CLI is a
+    single-threaded loop.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        # Every caller stamps in UTC (`datetime.now(tz=timezone.utc)`), so the
+        # parsed value is made aware rather than left naive.
+        moment = datetime.strptime(stamp, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        moment = None
+
+    for attempt in range(1, SHOT_NAME_ATTEMPTS + 1):
+        if moment is not None:
+            candidate = directory / f"{stem}_{moment.strftime('%Y%m%d_%H%M%S')}.png"
+        elif attempt == 1:
+            candidate = directory / f"{stem}_{stamp}.png"
+        else:
+            candidate = directory / f"{stem}_{stamp}_{attempt}.png"
+        if not candidate.exists():
+            return candidate
+        if moment is not None:
+            moment += timedelta(seconds=1)
+    # Every candidate is taken; hand back the last one rather than spin. The
+    # write will overwrite a frame from an earlier run, which is the behaviour
+    # this whole function exists to improve on, and it is better than a hang.
+    return candidate
+
+
 # chess.com requires a User-Agent header, otherwise it may block the request.
 HEADERS = {"User-Agent": "chess-agent/1.0 (beginner learning project)"}
 
-# Mapping of chess.com result codes to win/loss/draw from the user's perspective.
-# See: https://www.chess.com/news/view/published-data-api
+# Mapping of chess.com result codes to win/loss/draw from the user's
+# perspective. See https://www.chess.com/news/view/published-data-api
 WIN_CODES = {"win"}
 LOSS_CODES = {"checkmated", "resigned", "timeout", "abandoned"}
 DRAW_CODES = {
@@ -91,7 +144,7 @@ def _map_result(result_code: str) -> str:
         return "loss"
     if code in DRAW_CODES:
         return "draw"
-    # Unknown code: be safe and return the raw code so the model can show it.
+    # Unknown code: return the raw code so the model can show it.
     return code or "unknown"
 
 
@@ -121,16 +174,14 @@ def save_browser_profile(**fields) -> None:
 def configure_logging(level: str | None = None, fmt: str | None = None) -> None:
     """Send module logs somewhere visible.
 
-    Controlled by ``CHESS_AGENT_LOG`` (debug/info/warning/error) because the
+    Controlled by ``CHESS_AGENT_LOG`` (debug/info/warning/error), because the
     review pipeline swallows a lot of recoverable failures on purpose -- the
     logs are the only way to see *why* something degraded.
 
-    `fmt` replaces the formatter on the handler that is already installed.
-    Without it a second caller's `logging.basicConfig` is a documented no-op --
-    `basicConfig` does nothing once the root logger has a handler -- so a caller
-    that asked for timestamps or a different level silently got the first
-    caller's settings instead. Passing `fmt` here is the way to actually mean
-    it; setting the level works either way.
+    Reconfigures the handlers already on the root logger rather than calling
+    ``logging.basicConfig``: that is a documented no-op once a handler exists,
+    so a second caller would silently inherit the first caller's settings.
+    Passing ``fmt`` here is the way to actually mean it.
     """
     resolved = (level or os.getenv("CHESS_AGENT_LOG", "warning")).lower()
     numeric = getattr(logging, resolved.upper(), None)

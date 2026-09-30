@@ -1,49 +1,50 @@
-"""Dump the full HTML of every chess.com page state, so the DOM can be studied offline.
+"""Capture the full HTML of every chess.com page state, to study it offline.
 
     python dump_pages.py https://www.chess.com/game/live/184571437220
     python dump_pages.py <link> --out dumps --headed
 
 Why this exists
 ---------------
-Most of the bugs in this project were invisible because only a fragment of the
-page ever reached the code. A `class` lookup failed, the reader fell through to
-a weaker signal, and the tool reported "no blunders" for a game that had one --
-and nothing in the output said the real markup was sitting right there. The
-following were all only discovered by finally looking at the whole document:
-
-  * the move list lives in `wc-move-list` / `chessboard-pkg-move-list-component`
-  * a move is classified by `<g id="blunder">` and a
-    `var(--color-classification-book)` custom property, not by any class
-  * the move number is on the row, as `data-whole-move-number`
-  * the sidebar title is an `<h1>Game Review</h1>`, not a button
-  * `tab-review-start-review-button` is what actually starts the review
-  * the tally is collapsed behind a `button[aria-label="Expand"]` chevron
+Most bugs in this project were invisible because only a fragment of the page
+ever reached the code: a `class` lookup failed, the reader fell through to a
+weaker signal, and the tool reported "no blunders" for a game that had one --
+with nothing in the output to say the real markup was sitting right there.
 
 This writes the full document for each state, plus the review sidebar's markup
 on its own, plus a manifest describing what each file is. Run it when a
-selector stops working, paste the manifest and the relevant file, and the
-selectors can be re-pinned against real markup instead of guessed at.
+selector stops working, paste the manifest and the file for the state where it
+failed, and the selectors can be re-pinned against real markup instead of
+guessed at.
 
 What it captures, in order
---------------------------
-    game            the /game/... page
-    analysis        the /analysis/game/... board
-    review_loaded   /analysis/.../review with the summary panel loaded
-    review_expanded the same, after clicking the tally's expand chevron
-    review_started  after clicking Start Review -- this is where moves appear
-    moves_scrolled  the move list at several scroll offsets
+-------------------------
+    game            the /game/... page: the board as it was played
+    analysis        the /analysis/game/... board, which carries no per-move
+                    classification markup at all
+    review_loaded   /analysis/.../review with the summary panel loaded: the
+                    accuracy pair and the tally, still collapsed
+    review_expanded the same, after clicking the tally's expand chevron, so
+                    every tally row is in the document
+    review_started  after clicking Start Review -- this is where the moves
+                    exist, and where the summary panel is gone
+    moves_scrolled  the move list at five scroll offsets
 
-``moves_scrolled`` exists because this was ASSUMED to be a virtualised list.
-The capture says otherwise: all 29 ``[data-node]`` cells were present at every
-one of the five offsets, so the sweep is a no-op on the current layout. It is
-kept because a future layout may virtualise it, and because finding that out
-requires the evidence rather than an assumption.
+The scroll sweep is insurance against a virtualised list. On the current
+layout it is a no-op: every cell is present at every offset, so those five
+files differ only by name. It is kept because a future layout may virtualise
+the list, and because finding that out needs the evidence rather than an
+assumption.
 
-Run ``python make_fixture.py`` afterwards to distil the dump into the 18 KB
-fixture the tests actually read, then ``dumps/`` can be deleted.
+Output
+------
+Everything lands under ``--out`` (default ``dumps/``), which is gitignored by
+the ``dumps/`` entry in .gitignore and safe to delete. A capture is not a
+dependency of anything: ``python make_fixture.py`` distils it into the ~18 KB
+fixture the tests actually read, so the whole directory can go once that has
+been regenerated.
 
-Everything is written under ``--out`` (default ``dumps/``) and is git-ignored
-by the ``dumps/`` entry in .gitignore.
+``--headed`` shows the browser window, which is what you want when a stage
+hangs and the page has to be watched to see what it is doing.
 """
 
 import argparse
@@ -80,9 +81,9 @@ from tools.review import (
 # Keys to also save the review sidebar's outerHTML for, in a companion file.
 SIDEBAR_KEYS = ("analysis", "review_loaded", "review_expanded", "review_started")
 
-# How many scroll offsets to sample the move list at. The capture shows the list
-# is NOT virtualised on the current layout -- all 29 cells at every offset -- so
-# this is insurance, not a known requirement.
+# Intervals between scroll positions: the sweep samples SCROLL_STEPS + 1
+# offsets, top to bottom. Insurance against a virtualised list; the current
+# layout renders every cell at every offset.
 SCROLL_STEPS = 4
 
 
@@ -228,8 +229,8 @@ async def run(game_url: str, out_dir: Path, headed: bool) -> int:
                 "after Start Review: the move list exists here",
             )
 
-            # 6. The move list at several scroll offsets, to check whether it is
-            #    virtualised. It is not, on the current layout.
+            # 6. The move list at five scroll offsets. A no-op unless the layout
+            #    virtualises the list; that is what it is here to find out.
             if move_ready:
                 rows, diag = await read_moves_full(page)
                 total = diag.get("pliesKnown") or len(rows)

@@ -2,24 +2,20 @@
 
 Why this exists
 ---------------
-Every existing browser tool opens Chrome, does one thing, and closes it
-(`tools/review.py::_run`). That is fine for "review this game" and useless for
-"go forward two moves, then screenshot, then step back". An interactive session
-has to outlive a single tool call, which the current shape cannot do for two
-independent reasons -- both measured in `spikes/s0_1_loop_affinity.py`:
+The single-shot tools (`tools/review.py::_run`) open Chrome, do one thing, and
+close it. That is fine for "review this game" and useless for "go forward two
+moves, then screenshot, then step back". An interactive session has to outlive
+a single tool call, which that shape cannot do, for two independent reasons:
 
-  1. **Loop affinity.** `_run` uses `asyncio.run`, so a new event loop per call.
-     A Playwright `Page` is bound to the loop it was created on; once that loop
-     dies the transport is gone and `page.evaluate` raises
-     `AttributeError: 'NoneType' object has no attribute 'send'`. So the session
-     owns ONE private event loop, on ONE dedicated thread, and submits every
-     browser operation to it with `asyncio.run_coroutine_threadsafe`.
+  1. **Loop affinity.** A Playwright `Page` is bound to the loop that created
+     it, so a session that outlives one `asyncio.run` call cannot reuse that
+     loop. The session owns ONE private event loop, on ONE dedicated thread,
+     and reaches it with `run_coroutine_threadsafe`.
 
   2. **Operations must be serialised.** Two operations on one page at the same
-     instant destroy each other: a `page.goto` tears down the execution context
-     a concurrent `page.evaluate` was about to use ("Execution context was
-     destroyed, most likely because of a navigation"). So every submit takes a
-     lock. This is not optional -- it is what the R half of the spike measured.
+     instant destroy each other -- a `page.goto` tears down the execution
+     context a concurrent `page.evaluate` was about to use -- so every
+     operation runs under `_op_lock`.
 
 Design
 ------
@@ -36,12 +32,13 @@ Design
 The allow-list
 --------------
 The Discord gate exists because these tools drive the owner's logged-in
-chess.com account. Giving the agent free navigation widens that from "reads a
-game review" to "browses my account", so it is fenced: only the board/review/
-lesson/puzzle surface is reachable. Settings, logout, friends and messages are
-refused by name. The URL is checked *before* a navigation and *again* on the
-page's final URL, because chess.com is a single-page app that can redirect
-client-side after `goto` returns.
+chess.com account, and `storage_state.json` holds a live ACCESS_TOKEN.
+Giving the agent free navigation widens that from "reads a game review" to
+"browses my account", so it is fenced: only the board/review/lesson/puzzle
+surface is reachable. Settings, logout, friends and messages are refused by
+name. The URL is checked *before* a navigation and *again* on the page's final
+URL, because chess.com is a single-page app that can redirect client-side
+after `goto` returns.
 
 Concurrency note
 ----------------
@@ -51,8 +48,7 @@ review tool. This session's own `threading.RLock` handles the finer-grained case
 of several interactive operations racing on the one page. An idle session
 Chromium and a cold review Chromium may briefly coexist in memory; that is a
 resource overlap, not a correctness one (each browser reads the session cookies
-from disk; neither writes them). Phase 4 unifies the two so the overlap goes
-away.
+from disk; neither writes them).
 """
 
 from __future__ import annotations
@@ -83,9 +79,9 @@ LAUNCH_ARGS = [
     "--no-sandbox",
 ]
 
-# The page must be on chess.com and inside this fence. Prefixes are matched
-# against the path, so `/analysis/game/...` and `/analysis/` both pass while
-# `/analysisfoo` does not (a trailing boundary check follows each prefix).
+# The page must be on chess.com and inside this fence: the board, review,
+# lesson, puzzle and opening surface, and nothing else. Each entry is a path
+# prefix, matched at a boundary (see `url_allowed`).
 ALLOWED_PATH_PREFIXES = (
     "/",
     "/home",
@@ -97,7 +93,9 @@ ALLOWED_PATH_PREFIXES = (
     "/openings/",
 )
 
-# Named so the refusal message can be specific rather than a blanket "no".
+# Named so a refusal can be specific rather than a blanket "no". These strings
+# only shape the wording: they never change the allow/deny decision, which is
+# made by `ALLOWED_PATH_PREFIXES` alone.
 REFUSED_EXAMPLES = {
     "settings": "changing account settings",
     "logout": "logging out of your account",
@@ -137,6 +135,8 @@ def url_allowed(url: str) -> tuple[bool, str]:
         return False, f"I could not make sense of that URL: {url!r}."
     host = m.group(1).lower()
     path = m.group(2) or "/"
+    # The host is compared by equality, never by suffix, so a lookalike such as
+    # `chess.com.attacker.net` cannot inherit the allow-list.
     if host not in ("www.chess.com", "chess.com"):
         return False, (
             f"The session only browses chess.com, and that link is on {host}."
@@ -144,10 +144,9 @@ def url_allowed(url: str) -> tuple[bool, str]:
     if path == "/":
         return True, ""
     # Each prefix is matched at a path boundary, so `/analysis` and
-    # `/analysis/game/...` pass while `/analysisfoo` does not. Prefixes are
-    # compared with any trailing slash stripped, because the normaliser drops
-    # it from the URL too -- otherwise `/puzzles/` would never match the
-    # prefix `/puzzles/`.
+    # `/analysis/game/...` pass while `/analysisfoo` does not. Both sides drop a
+    # trailing slash, otherwise `/puzzles/` would never match `/puzzles/`.
+    # The site root "/" is skipped: as a prefix it would match every path.
     for prefix in ALLOWED_PATH_PREFIXES:
         if prefix == "/":
             continue
@@ -203,7 +202,7 @@ class _LoopThread:
 
 
 async def _drain() -> None:
-    """Cancel and gather pending tasks so nothing is 'destroyed but pending'."""
+    """Cancel and gather pending tasks so none is left running on close."""
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
         task.cancel()
@@ -278,6 +277,10 @@ class BrowserSession:
     async def _open_async(self) -> Any:
         from playwright.async_api import async_playwright
 
+        # `session_state_path()` honours `CHESS_AGENT_STATE`, so the replayed
+        # cookies come from wherever login_chess.py saved them. The context is
+        # given the SAME User-Agent the session was minted under, because
+        # chess.com ties the token to it.
         state = session_state_path()
         if not state.exists():
             raise SessionClosed(
@@ -372,12 +375,10 @@ class BrowserSession:
     def open(self, url: str = "https://www.chess.com/home") -> Any:
         """Open the browser, landing on `url` (the home page by default).
 
-        The navigation is part of opening on purpose. Launching a context gives
-        a blank page, and a blank page is not a session a tool can do anything
-        with -- the first live run reported `open=True` with an empty title and
-        an empty URL, then reported "did not open on chess.com" while every
-        later step worked. Opening *onto* the site makes `is_open` and
-        `current_url` meaningful the moment they are read.
+        The navigation is part of opening on purpose: a launched context has a
+        blank page, and a blank page is not a session a tool can do anything
+        with. Opening *onto* the site makes `is_open` and `current_url`
+        meaningful the moment they are read.
         """
         with self._op_lock:
             if self._runner is None or not self._runner.thread.is_alive():
@@ -387,12 +388,11 @@ class BrowserSession:
             self._runner.run(self._open_async, 180)
             self._last_used = time.monotonic()
             self._start_ttl()
-            # The landing navigation happens HERE, once, on the page that was
-            # just created. It must not happen on an already-open session: an
-            # earlier version re-ran this on every call, so `navigate(review)`
-            # -> `open()` -> `navigate(home)` and the requested URL was silently
-            # replaced by the home page. The page stayed on /home while the
-            # caller was told it had landed on the review.
+            # The landing navigation happens HERE, on the page just created, and
+            # only because it was just created. It must not run on an
+            # already-open session: `open()` is called by every `submit`, so
+            # re-navigating here would silently replace the URL the caller
+            # asked for with the home page.
             self._url = ""
             self._navigate(url)
             return self._page
@@ -427,21 +427,18 @@ class BrowserSession:
     ) -> Any:
         """Run a coroutine factory against the open page, under the lock.
 
-        Ensures the session is open first, unless `ensure_open=False` -- which
-        is what a read-only probe wants. Asking "where are we" must not launch a
-        browser, or `where_am_i` becomes an expensive way to learn nothing. That
-        was the first live run's first finding: `where_am_i` reported the home
-        page and an open session when nothing had been asked for yet.
+        Opens the session first unless `ensure_open=False`. That flag is what a
+        read-only probe wants: asking "where are we" must not launch a browser,
+        or the question becomes an expensive way to learn nothing.
 
-        The lock is what the S0.1 R half of the spike measured as mandatory:
-        without it a `goto` and an `evaluate` issued together destroy each
-        other's execution context.
+        The lock is mandatory, not politeness: without it a `goto` and an
+        `evaluate` issued together destroy each other's execution context.
         """
         with self._op_lock:
             if ensure_open:
-                # `open` re-enters this lock (an RLock, so that is legal) but
-                # it must NOT re-enter `submit`: navigate -> submit -> open was
-                # the recursion that blew the stack. `open` only does the goto.
+                # `open` re-enters this lock (an RLock, so that is legal) but it
+                # must NOT re-enter `submit` itself: navigate -> submit -> open
+                # -> submit is unbounded recursion. `open` only does the goto.
                 self.open()
             if self._runner is None:  # pragma: no cover - defensive
                 raise SessionClosed("The session browser could not be opened.")
@@ -490,8 +487,9 @@ class BrowserSession:
                 await page.wait_for_load_state("networkidle", timeout=20000)
             except Exception as exc:  # noqa: BLE001 - a busy page is not an error
                 _LOG.debug("networkidle not reached: %s", exc)
-            # Fence the FINAL url too: chess.com can redirect client-side after
-            # goto returns, so the pre-check alone is not enough.
+            # Fence the FINAL url too, not just the pre-goto one: chess.com is a
+            # single-page app and can redirect client-side after `goto` returns,
+            # so the pre-check alone is not enough.
             allowed, reason = url_allowed(page.url)
             if not allowed:
                 raise SessionClosed(reason)
@@ -534,10 +532,10 @@ class BrowserSession:
         """Capture the review summary BEFORE anything starts the review.
 
         Accuracy and the classification tally exist on the review page only
-        before "Start Review" is pressed -- `tools/move_list.py` documents this
-        as a load-bearing ordering, not a defensive habit. In an interactive
-        session the user can start the review at any time, so we read and cache
-        the summary the moment we land on a review URL.
+        before "Start Review" is pressed -- see `tools/move_list.py`, where this
+        ordering is load-bearing rather than defensive. In an interactive
+        session the user can start the review at any time, so read and cache the
+        summary the moment we land on a review URL.
         """
         from . import move_list
 
@@ -581,13 +579,11 @@ def _headed() -> bool:
 # `_ACTIVE`, because the caller that built the coroutine factory is a different
 # thread from the loop that runs it and cannot hand it over.
 #
-# `_ACTIVE` is a plain global, not a `contextvars.ContextVar`. A ContextVar set
-# inside one task does not survive into the next: `run_coroutine_threadsafe`
-# gives every task its own copy of the submitting context, so the value set
-# while opening was gone by the time the next coroutine ran -- which is exactly
-# the `SessionClosed: page is not available on this loop` the first live run
-# produced. A global is correct here precisely because there is only ever one
-# browser loop in the process.
+# `_ACTIVE` is a plain global, not a `contextvars.ContextVar`:
+# `run_coroutine_threadsafe` gives every task its own copy of the submitting
+# context, so a value set inside one task does not survive into the next. A
+# global is correct here precisely because there is only ever one browser loop
+# in the process.
 _SESSION: BrowserSession | None = None
 _SESSION_LOCK = threading.Lock()
 _ACTIVE: "BrowserSession | None" = None
@@ -608,7 +604,7 @@ def publish_session(session: "BrowserSession | None") -> None:
 
     Called from inside `_open_async` / `_close_async`, i.e. on the private
     loop, and cleared at close so a coroutine can never pick up a page whose
-    transport has just died -- the S0.1-A failure exactly.
+    transport has just died.
     """
     global _ACTIVE
     _ACTIVE = session
@@ -617,9 +613,9 @@ def publish_session(session: "BrowserSession | None") -> None:
 def current_page() -> Any:
     """The live page, from inside a coroutine running on the private loop.
 
-    Raises rather than returning None, because every caller here is a browser
-    tool that cannot do anything without a page, and a silent None surfaces as
-    `AttributeError: 'NoneType'` several frames away from the cause.
+    Raises rather than returning None: every caller here is a browser tool that
+    cannot do anything without a page, and a silent None surfaces as an
+    `AttributeError` several frames away from the cause.
     """
     session = _ACTIVE
     if session is None or session._page is None:

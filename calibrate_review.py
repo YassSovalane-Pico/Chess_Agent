@@ -1,4 +1,4 @@
-"""Verify that move classification and navigation actually work.
+"""Prove that move classification and navigation work on a real game.
 
 Run this against a game that HAS at least one blunder or brilliant move --
 a clean game proves nothing, because there is nothing to find.
@@ -8,30 +8,55 @@ a clean game proves nothing, because there is nothing to find.
     python calibrate_review.py <link> --strict      # also fail on unlisted kinds
     python calibrate_review.py <link> --headed        # watch it work
 
-What it does:
-  1. Opens the review page and prints what the page actually looks like
-     (element count, body text length, visible loaders, readiness signals).
-  2. Blocks until the review view has mounted -- both no loaders *and* a real
-     readiness signal, because "no loaders" is also true before the app has
-     mounted anything.
-  3. If no review panel is present, looks for the control that enters the
-     move-by-move review and clicks it.
-  4. Prints every parsed ply with its classification, confidence and evidence.
-  5. Compares classification counts against --expect ground truth, so
-     correctness is measured rather than assumed. Only the kinds you list are
-     compared unless you pass --strict, because every real game also contains
-     book/great/best moves that you did not write down.
-  6. Proves forward/backward navigation by stepping and checking the board
-     actually changed.
-  7. Dumps the FULL sidebar markup plus every classification-ish element, so
-     the selector tables in tools/move_list.py can be pinned to real markup.
+Ten checks, in the order they print
+-----------------------------------
+  1. page load state      element count, body text length, visible loaders and
+                          the layout/panel/move-list readiness signals.
+  2. review data          the panel is computed server-side and arrives long
+                          after the layout; this is the wait that matters.
+  3. summary panel        the accuracy pair and the tally, read BEFORE the
+                          review is started.
+  4. starting the review  the entry control, then the move list it produces.
+  5. summary panel again  expected to be empty once the review is running, so
+                          the pre-start numbers above are the real ones.
+  6. move list            every parsed ply with its classification, confidence
+                          and evidence, plus coverage against the plies the
+                          DOM knows about.
+  7. colour palette       what the review legend taught the reader, and which
+                          colours were discarded as ambiguous.
+  8. detection            at least one brilliant or blunder, and at least one
+                          of them labelled by chess.com rather than inferred.
+  9. ground truth         --expect compared against what was read.
+ 10. navigation           forward 3 and back 3, each verified against the
+                          board signature, with the board proven idle first.
 
-Exit code 0 = all checks passed, 1 = problems found.
+A DOM dump goes to screenshots/calibration.json: written immediately after the
+load wait, before anything else can throw, and re-written if a later stage
+gets further. A failed run with a dump is worth far more than a
+successful-looking run without one.
 
+Reading the output
+------------------
 Read the "page load state" output before anything else. A page that never
 mounted has a few hundred elements and a body text of a few hundred
+characters; a mounted app has thousands of elements and many thousands of
 characters. Every check after that point is measuring a blank page, and the
 run says so rather than quietly reporting success.
+
+--expect and --strict
+---------------------
+--expect is the ground truth you can see for yourself: --expect blunder=2
+compares only blunder. --strict additionally fails on any classification not
+in the list, which is what a full ground-truth table and a unit test want and
+what a partial list cannot use, because every real game also contains book,
+great and best moves: --expect blunder=2 --strict would fail on the kinds you
+never wrote down.
+
+Exit codes
+----------
+  0  every check passed
+  1  a check failed, and the output names the stage and what it expected
+  2  the run could not start: no Playwright, an unusable link, or no session
 """
 
 import argparse
@@ -124,11 +149,10 @@ def _report_moves(rows: list[dict], diag: dict) -> None:
 def _print_state(state: dict) -> None:
     """Print what the page actually looks like right now.
 
-    A run that reads zero moves is almost always a timing problem, not a
-    detection problem, and the difference is visible in one snapshot: a page
-    whose app has mounted has thousands of elements and a body text of many
-    thousands of characters. 119 characters of body text with 447 elements means
-    the layout shell rendered and the review data never arrived.
+    Read `bodyChars` next to `elements`: a mounted app has thousands of
+    elements and many thousands of characters of body text, and the two
+    together separate "the review data has not arrived" from "there is nothing
+    on this page at all".
     """
     print(f"  elements in DOM  : {state.get('elements')}")
     print(f"  body text length : {state.get('bodyChars')}")
@@ -148,11 +172,12 @@ def _print_state(state: dict) -> None:
 
 
 async def _write_dump(page, label: str) -> dict:
-    """Write the DOM dump, always, and never let it fail the run.
+    """Write the DOM dump to screenshots/calibration.json; never fail the run.
 
-    The dump is the only evidence a calibration produces. A previous version
-    wrote it at the very end, so a single unhandled exception anywhere above
-    destroyed the run's output and the next attempt had nothing to learn from.
+    The dump is the only evidence a calibration produces, so it is written as
+    soon as the page is ready and rewritten by any later stage that gets
+    further. Capture failures are reported and swallowed: a missing dump is
+    bad, but a run that dies before printing its findings is worse.
     """
     out = PROJECT_ROOT / "screenshots" / "calibration.json"
     out.parent.mkdir(exist_ok=True)
@@ -226,11 +251,9 @@ async def run(game_url: str, expect: dict[str, int], headed: bool, strict: bool)
 
             # --- summary panel ------------------------------------------
             # Read this BEFORE starting the review. Starting it replaces the
-            # summary with the move-by-move view, so reading it afterwards
-            # returns None for both accuracies and {} for the tally -- which
-            # looks exactly like "the page had no summary", and is how a run
-            # reported a perfect tally in one section and nothing at all in
-            # the very next one.
+            # summary with the move-by-move view, after which both accuracies
+            # read None and the tally reads {} -- which looks exactly like a
+            # page that had no summary.
             print("\n=== summary panel (pre-start) ===")
             try:
                 text = await page.evaluate("() => document.body.innerText || ''")
@@ -250,9 +273,9 @@ async def run(game_url: str, expect: dict[str, int], headed: bool, strict: bool)
                 print(f"  counts (text)   : {fallback}")
 
             # --- starting the review ---------------------------------------
-            # The page serves the summary only. No move, no move-list-row and
-            # no main-line-ply exists until this control is used, so a run that
-            # skips it reads "no blunders" for a game full of them.
+            # The page serves the summary only: no move, no move-list-row and
+            # no main-line-ply exists until this control is used, so skipping
+            # it leaves a game full of blunders looking like a clean one.
             print("\n=== starting the review ===")
             if panel_ready:
                 try:
@@ -356,10 +379,9 @@ async def run(game_url: str, expect: dict[str, int], headed: bool, strict: bool)
                     " colour, not explicitly labelled by chess.com."
                 )
             if hits and not explicit:
-                # This is the shape the previous calibration run had: hits that
-                # were entirely inferred, on a page that turned out not to be
-                # the review view at all. A run like that proves nothing, so it
-                # must not be reported as a pass.
+                # An inferred hit is a glyph or a colour, not a label chess.com
+                # wrote. If every hit is inferred, the page may not be the
+                # review view at all, so this must not be reported as a pass.
                 print(
                     "  FAIL: every hit was inferred. chess.com did not label any"
                     " move, which usually means the Game Review view never opened."
@@ -464,6 +486,8 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # The version goes into the output so a run can be traced back to the build
+    # that produced it.
     print(f"chess-agent review calibrator v{__version__}\n")
     parser.add_argument("game_url", help="a chess.com /game/ link")
     parser.add_argument(

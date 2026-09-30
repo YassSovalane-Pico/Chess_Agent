@@ -13,9 +13,8 @@ _LOG = logging.getLogger(__name__)
 def _json_object(resp) -> dict | None:
     """Parse a chess.com response body as a JSON object, else None.
 
-    ``.get`` on a JSON *array* raises AttributeError, which the callers' bare
-    ``except ValueError`` never caught -- the error then escaped the tool as
-    "Tool failed: 'list' object has no attribute 'get'" instead of a message
+    Guards the type rather than trusting it: ``.get`` on a JSON *array* raises
+    AttributeError, which would escape the tool instead of producing a message
     about a bad response.
     """
     try:
@@ -66,12 +65,8 @@ def _parse_game(game: dict, username: str) -> dict | None:
     Returns:
         A small dict with date, time control, colors, ratings, result,
         opening (name/ECO code/URL), etc. -- or None when the requested player
-        is not in this game at all.
-
-    The old version assumed "if not white, then black", so a game the player
-        was not part of was reported as a loss for Black against a fabricated
-        opponent. Returning None lets the caller count and report the mismatch
-        instead of inventing it.
+        is not in this game at all, so the caller can report the mismatch
+        instead of inventing a colour and an opponent.
     """
     wanted = username.lower()
     white = game.get("white", {})

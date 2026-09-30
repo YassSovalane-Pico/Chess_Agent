@@ -1,9 +1,8 @@
 """Interactive chess.com tools: open a page, walk the moves, take a picture.
 
-These are the tools that make the agent a *browser* rather than a reviewer.
-Before them, every browser tool took a game link and did one fixed thing with
-it. These take a URL or a move and act on whatever is currently open, so a
-conversation can go:
+These are the tools that make the agent a *browser* rather than a reviewer. The
+single-shot tools take a game link and do one fixed thing with it; these take a
+URL or a move and act on whatever is currently open, so a conversation can go:
 
     open the review of game X  ->  go forward 3 moves  ->  screenshot that
     ->  what does the engine think of this position  ->  step back 2
@@ -15,17 +14,19 @@ like" means board/review/lesson/puzzle pages -- not settings or logout.
 
 Every function here is a *synchronous* entry point returning a JSON-safe dict,
 like every other tool the agent calls. The async work is submitted to the
-session's private event loop inside, which is what `spikes/s0_1_loop_affinity.py`
-established is the only way a page can outlive a tool call.
+session's private event loop inside, which is what lets a page outlive a tool
+call.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import move_list
+from .common import unique_shot_path
 from .session import (
     SessionClosed,
     close_session,
@@ -36,8 +37,8 @@ from .session import (
 
 _LOG = logging.getLogger(__name__)
 
-# Screenshot regions. `auto` is the existing board+panel crop; the others are
-# for "show me the whole page" and "just the board".
+# Screenshot regions. `auto` is the board+panel crop; `board` and `sidebar`
+# narrow it, and `viewport` is the whole window for "show me the page".
 SHOT_REGIONS = ("auto", "board", "sidebar", "viewport")
 
 # A single tool call may not write more frames than this. The turn-level cap in
@@ -57,6 +58,8 @@ def _shot_dir() -> Path:
 
 
 def _stamp() -> str:
+    """Second-resolution, for readability. `unique_shot_path` is what makes it
+    safe: a stamp alone is not a unique name."""
     return datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
@@ -85,10 +88,8 @@ async def _describe_page() -> dict:
     page = current_page()
     return await page.evaluate(
         """() => {
-          // `textContent || ''` is not enough: an element with no children
-          // yields null from `|| ''` only if it is null itself, and the
-          // heading/eval spans can be present-but-empty, which made a live
-          // run die with "Cannot read properties of null (reading 'trim')".
+          // The eval and heading spans can exist and be empty, so coerce rather
+          // than trusting `textContent || ''` to always yield a string.
           const t = (el) => (el ? String(el.textContent || '').trim() : '');
           const evalEl = document.querySelector('.evaluation-bar-score')
             || document.querySelector('#board-layout-evaluation');
@@ -129,10 +130,9 @@ def where_am_i() -> dict:
     except Exception:  # noqa: BLE001
         return _not_logged_in()
     if not session.is_open:
-        # A question must not open a browser. `where_am_i` is what a user calls
-        # to find out whether anything is running, and answering it by starting
-        # a Chromium -- then reporting "you are on the home page" -- is exactly
-        # the wrong answer.
+        # A question must not start a browser: `where_am_i` is how the user
+        # finds out whether anything is running, and launching Chromium to
+        # answer it would make "nothing is open" impossible to report.
         return {
             "session_open": False,
             "url": None,
@@ -299,9 +299,8 @@ def move_board(direction: str = "next", plies: int = 1) -> dict:
         failure returns {"error": "..."}.
     """
     want = (direction or "next").strip().lower()
-    # `plies or 1` would turn an explicit 0 into 1, so 0 slipped through as a
-    # real forward step. Read the argument as given and refuse a zero count
-    # rather than quietly doing something the caller did not ask for.
+    # Read the count as given: `plies or 1` would turn an explicit 0 into a
+    # real step, so a zero is refused rather than quietly rounded to one.
     try:
         raw = int(plies) if plies is not None else 1
     except (TypeError, ValueError):
@@ -348,9 +347,8 @@ async def _goto_ply_and_describe(ply: int) -> dict:
         rows, diag = await move_list.read_moves_when_ready(page)
     total = diag.get("pliesKnown") or len(rows)
     await move_list.scroll_to_ply(page, ply, total)
-    # Re-read so the per-ply tags navigation clicks are current. Two reads on
-    # purpose: the first may be an empty list, the second is the one the click
-    # depends on.
+    # Re-read so the per-ply tags the click depends on are current: the first
+    # read may have been the empty list above, not the rendered one.
     rows, diag = await move_list.read_moves(page)
     ok = await move_list.goto_ply(page, ply)
     row = next((r for r in rows if r.get("ply") == ply), None)
@@ -412,11 +410,9 @@ def goto_move_in_game(ply: int = 0, move_number: int = 0, color: str = "") -> di
         if isinstance(resolved, str) and resolved.startswith("!"):
             return _error(resolved[1:])
         result = session.submit(lambda: _goto_ply_and_describe(resolved), 180)
-        # `moved` is goto_ply's own verification: it reports whether the board
-        # CHANGED. On a review page that has just been started, the board is
-        # already sitting at ply 1, so asking for ply 1 is a correct request
-        # that provably changes nothing -- and reporting that as a failure
-        # would make the tool lie about a position it is already on.
+        # `moved` is goto_ply's own verification: did the board CHANGE? Asking
+        # for the ply a just-started review already sits on provably changes
+        # nothing, and that is a success rather than a failure to report.
         at = result.get("current_ply")
         result["already_at"] = at is not None and at == resolved
         engine = session.submit(_describe_page, 90)
@@ -452,6 +448,7 @@ def _move_summary(row: dict) -> dict:
 async def _resolve_live(ply: int, move_number: int, color: str) -> int:
     """Return the ply the user meant, or an error string prefixed with '!'.
 
+    The '!' is what tells an error apart from a ply index on the way out.
     Shares `resolve_move` with the review tools so "move 14" is ambiguous in
     exactly the same way, and refused in exactly the same way, everywhere.
     """
@@ -474,20 +471,39 @@ async def _resolve_live(ply: int, move_number: int, color: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def _shoot(region: str, out: Path) -> str:
-    """Screenshot the open page into `out`. Returns the path as a string."""
+async def _shoot(region: str, out: Path) -> dict:
+    """Screenshot the open page into `out`.
+
+    Returns ``{"path", "framed"}``: what was written, and what is actually in
+    the frame. `framed` is the honest part -- `screenshot_review_area` silently
+    falls back to the whole window when the board cannot be located, and a
+    full-window photograph is not the position the user asked to see.
+    """
     from .review import content_clip, screenshot_review_area
 
     page = current_page()
+    framed = "the whole page"
     if region in ("auto", "board", "sidebar"):
-        # `content_clip` already honours REVIEW_SHOT_REGION for the auto case;
-        # board/sidebar here narrow it further by choosing which boxes to union.
-        import os
-
         previous = os.environ.get("REVIEW_SHOT_REGION")
-        os.environ["REVIEW_SHOT_REGION"] = "board" if region == "board" else "sidebar"
+        if region != "auto":
+            # `auto` means "the board and the review panel", which is exactly
+            # what `content_clip` produces from REVIEW_SHOT_REGION. Setting it
+            # to "sidebar" for that case -- as this used to -- framed the panel
+            # alone: no board, no position, in a file whose caption said "the
+            # board and the review panel".
+            os.environ["REVIEW_SHOT_REGION"] = (
+                "board" if region == "board" else "sidebar"
+            )
         try:
-            await screenshot_review_area(page, out, await content_clip(page))
+            clip = await content_clip(page)
+            await screenshot_review_area(page, out, clip)
+            if clip:
+                framed = {
+                    "board": "the board",
+                    "sidebar": "the side panel",
+                }.get(region, "the board and the review panel")
+            else:
+                framed = "the whole page (fallback: the board was not found)"
         finally:
             if previous is None:
                 os.environ.pop("REVIEW_SHOT_REGION", None)
@@ -495,7 +511,7 @@ async def _shoot(region: str, out: Path) -> str:
                 os.environ["REVIEW_SHOT_REGION"] = previous
     else:
         await page.screenshot(path=str(out), full_page=False)
-    return str(out)
+    return {"path": str(out), "framed": framed}
 
 
 def take_screenshot(region: str = "auto", label: str = "") -> dict:
@@ -505,6 +521,12 @@ def take_screenshot(region: str = "auto", label: str = "") -> dict:
     "show me the board", "what does it look like", "grab a picture of that
     puzzle". It shoots the page that is currently open, so pair it with
     open_chess_page or move_board: navigate first, then photograph.
+
+    IMPORTANT: it photographs the position the page is showing NOW. When the
+    user names a move ("a screenshot of move 14"), move there FIRST with
+    goto_move_in_game or open the game with open_chess_page -- otherwise the
+    picture is of whatever move was on screen, which is the commonest way of
+    sending somebody the wrong position.
 
     Regions:
       auto (default)  the chessboard and the review panel, cropped tight --
@@ -521,10 +543,17 @@ def take_screenshot(region: str = "auto", label: str = "") -> dict:
 
     Returns:
         {"screenshot": "<path>", "region": str, "url": str, "label": str,
-        "note": str}
-        The screenshot path is a real file on disk. On a chat front end it is
-        attached to your reply automatically -- never print the path. On
-        failure returns {"error": "..."}.
+        "framed": str, "note": str}
+        The screenshot path is a real file on disk, and a fresh one every call,
+        so asking for several pictures in a row returns several files. `framed`
+        says what is in the picture -- if it says "fallback", the board was not
+        found and this is not the position the user asked about; say so.
+        On a chat front end the picture is attached to your reply
+        automatically -- never print the path. On failure returns
+        {"error": "..."}: if that happens, say you could not take the picture.
+        Never write "here is the screenshot" for a call that came back an
+        error, which is how a user ends up promised a picture that was never
+        sent.
     """
     want = (region or "auto").strip().lower()
     if want not in SHOT_REGIONS:
@@ -543,14 +572,20 @@ def take_screenshot(region: str = "auto", label: str = "") -> dict:
         name_parts = ["shot", want]
         if safe_label:
             name_parts.append(safe_label)
-        out = _shot_dir() / (f"{'_'.join(name_parts)}_{_stamp()}.png")
-        session.submit(lambda: _shoot(want, out), 120)
+        # Unique by construction. "Screenshots of 12, 14 and 16" is three calls
+        # inside one second, and they all wanted `shot_board_<stamp>.png`: the
+        # second overwrote the first, and the chat front end de-duplicates by
+        # path, so the user asked for three pictures and was sent one.
+        out = unique_shot_path(_shot_dir(), "_".join(name_parts), _stamp())
+        shot = session.submit(lambda: _shoot(want, out), 120)
     except SessionClosed as exc:
         return _error(str(exc))
     except Exception as exc:  # noqa: BLE001 - tool boundary
         _LOG.warning("take_screenshot failed", exc_info=True)
         return _error(f"Could not take a screenshot: {exc}")
     if not out.exists():
+        # Never hand back a path that is not on disk: the chat front end
+        # attaches this reply, so a bad path is a silent failure.
         return _error("The screenshot could not be written.")
     return {
         "screenshot": str(out),
@@ -558,6 +593,7 @@ def take_screenshot(region: str = "auto", label: str = "") -> dict:
         "url": page_info.get("url", session.current_url),
         "title": page_info.get("title", ""),
         "label": safe_label,
+        "framed": (shot or {}).get("framed", "unknown"),
         "note": "The picture is attached to the reply automatically. Do not "
         "print the file path.",
     }

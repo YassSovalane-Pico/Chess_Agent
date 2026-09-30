@@ -1,25 +1,19 @@
 """Where configuration comes from, and how to see what is actually set.
 
-This module exists because of a mistake worth naming. `get_api_key()` used to
-load the project `.env` and then, *silently*, fall back to one in the parent
-directory as a convenience. The result was that the Gemini key lived in
-`D:\\Python\\Ai\\.env` while everything else expected
-`D:\\Python\\Ai\\chess-agent\\.env`, and nobody -- including the error messages
--- could say where the setting had come from. A "Missing X" message that does
-not name the file it looked in is close to useless, and the silent fallback is
-what made two sources of truth possible in the first place.
-
-So: one place resolves the env files, everything that needs a setting asks
-here, and nothing falls back without saying so.
+One module resolves the env files; everything that needs a setting asks here.
+Nothing falls back silently.
 
 Rules, in order:
 
-  1. `chess-agent/.env`        -- where it belongs, and the only file `.env.example`
-                                  documents
-  2. `chess-agent/.env.local`  -- per-machine overrides, git-ignored, loaded second
-  3. the process environment  -- wins outright, so CI and one-off runs work
-  4. a parent `.env`           -- accepted ONLY if the project has no `.env` at all,
-                                  and reported loudly when it is used
+  1. `chess-agent/.env`        -- where it belongs, and the only file
+                                  `.env.example` documents
+  2. `chess-agent/.env.local`  -- per-machine overrides, git-ignored
+  3. the process environment   -- wins outright, so CI and one-off runs work
+  4. a parent `.env`           -- accepted ONLY if the project has no `.env`
+                                  at all, and reported loudly when used
+
+Two files setting the same key produces a stale value with no idea where it
+came from, so a parent `.env` is ignored entirely once the project has its own.
 
 Nothing here ever prints a value. These are tokens and API keys; the tooling
 reports whether a key is present, not what it is.
@@ -29,7 +23,6 @@ import os
 import re
 from pathlib import Path
 
-# The project root: the directory holding this file.
 PROJECT_DIR = Path(__file__).resolve().parent
 PROJECT_ENV = PROJECT_DIR / ".env"
 LOCAL_ENV = PROJECT_DIR / ".env.local"
@@ -39,7 +32,7 @@ EXAMPLE_ENV = PROJECT_DIR / ".env.example"
 # prose line containing an `=` is not mistaken for a variable.
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
-# Secrets that must never reach a log, a screenshot, or a chat message.
+# Names whose values must never reach a log, a screenshot, or a chat message.
 SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "SESSID")
 
 
@@ -50,14 +43,7 @@ def is_secret(name: str) -> bool:
 
 
 def parent_env_path() -> Path:
-    """The `.env` one directory above the project, if there is one.
-
-    Named as a function on purpose. Writing `PROJECT_ENV.parent / ".env"`
-    instead yields the *project's own* .env, because the parent of a file is its
-    directory -- which is a silent no-op that reads as if it worked. That
-    mistake made `setup_env.py` report "carried over: nothing" while a real
-    Gemini key sat in the parent directory.
-    """
+    """The `.env` one directory above the project, if there is one."""
     return PROJECT_DIR.parent / ".env"
 
 
@@ -69,9 +55,6 @@ def candidate_files() -> list[Path]:
     """
     files = [PROJECT_ENV, LOCAL_ENV]
     if not PROJECT_ENV.exists():
-        # The old convenience, kept but made visible. If the project has its own
-        # .env, a parent's is ignored entirely: two files setting the same key is
-        # how you get a stale value with no idea where it came from.
         files.append(parent_env_path())
     return files
 
@@ -121,10 +104,10 @@ def describe_sources() -> str:
 def setting_state(name: str) -> str:
     """``"set"``, ``"placeholder"`` or ``"unset"`` for one setting.
 
-    Distinguishing "your_api_key_here" from a real value matters more than it
-    sounds: a copied `.env.example` looks configured to every naive check, and
-    the failure then surfaces as a confusing 400 from an API instead of a
-    sentence about the file.
+    Distinguishing "your_api_key_here" from a real value matters: a copied
+    `.env.example` looks configured to every naive check, and the failure then
+    surfaces as a confusing 400 from an API instead of a sentence about the
+    file.
     """
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -165,12 +148,11 @@ def documented_keys() -> list[str]:
     """`.env.example` keys in file order, with the commented-out ones too.
 
     The commented entries are the *optional* settings, and they are exactly the
-    ones a hand-written `.env` forgets. So they have to be in this list for the
+    ones a hand-written `.env` forgets, so they have to be in this list for the
     doctor to be able to say "your .env is missing 9 documented settings".
 
-    Only names that actually look like environment variables count. A prose
-    line such as ``#   all = open it to anyone`` also contains an `=`, and
-    reading it as a setting named `all` put a nonsense entry in the report.
+    Only names that actually look like environment variables count -- a prose
+    line such as ``#   all = open it to anyone`` also contains an `=``.
     """
     if not EXAMPLE_ENV.exists():
         return []

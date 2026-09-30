@@ -4,16 +4,14 @@ STATUS: built against a captured `dump_pages.py` run (dumps/), not against
 guesses. Every selector here was read out of `review_started.html`, and the
 tests assert against that markup's actual shape.
 
-What the dumps established, and what replaced what:
+What the dumps established:
 
   * **The move list is not virtualised.** 29 `[data-node]` cells were in the
-    DOM at every one of five scroll offsets. The old code assumed a virtualised
-    window and swept it, which was a no-op.
+    DOM at every one of five scroll offsets, so no scroll sweep is needed.
   * **`data-node="<variation>-<index>"` is an authoritative ply index.**
     `ply = variation * 2 + index + 1`. 29 cells, zero gaps, no counting and no
-    density heuristic needed. The old reader found "the element with the most
-    move-like cells" and then dropped 3 of 29 plies on a dedup key built from
-    a move number that lives on the row, not in the cell.
+    density heuristic needed. The move number it could have been keyed on lives
+    on the row, not in the cell, so it must not be used as a dedup key.
   * **Every classification is explicitly labelled**, in one of two places on
     the cell: `<span class="node-annotation-icon"><svg><g id="blunder">`, or
     `style="color: var(--color-classification-book)"`. The `g` id casing is
@@ -36,9 +34,9 @@ What the dumps established, and what replaced what:
     the frame can hug it.
   * The page mounts in **three stages**: layout shell, then the review data
     (a few seconds, computed server-side), then the move list (only after
-    `tab-review-start-review-button`). Checking for "no loading placeholders"
-    is true before any of that, and so is "the board is on screen"; each was
-    shipped as a bug. `wait_for_review_loaded` therefore takes an explicit
+    `tab-review-start-review-button`). Both "no loading placeholders" and "the
+    board is on screen" are true before any of that, so neither can be the
+    readiness signal on its own; `wait_for_review_loaded` takes an explicit
     `require="layout" | "panel" | "movelist"`.
 
 Public surface:
@@ -172,16 +170,14 @@ TAB_HINTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# The classification vocabulary. Python, not JavaScript.
-#
-# This used to live inside the reader's JS blob, duplicated with the tally
-# reader. Now the browser extracts raw *facts* (an icon id, a CSS custom
-# property) and this table turns them into a kind -- so there is exactly one
-# place to add a classification, and it is unit-testable without a browser.
+# The classification vocabulary. Python, not JavaScript: the browser extracts
+# raw *facts* (an icon id, a CSS custom property) and this table turns them into
+# a kind, so there is exactly one place to add a classification and it is
+# unit-testable without a browser.
 #
 # `frags` are matched against the separator- and camelCase-aware form of a
 # class name with word boundaries. Stripping punctuation and doing a substring
-# search is what turned "dismiss" into a miss and "Facebook" into a book.
+# search is what turns "dismiss" into a miss and "Facebook" into a book.
 # ---------------------------------------------------------------------------
 
 RULES: tuple[dict, ...] = (
@@ -449,17 +445,10 @@ async def wait_for_review_loaded(
 ) -> bool:
     """Block until the review page has got far enough to read from.
 
-    Two mistakes this function exists to prevent, both shipped as bugs:
-
-    Checking only for the *absence* of loading placeholders. Right after
-    ``domcontentloaded`` chess.com's Vue app has not mounted the sidebar at all,
-    so there is nothing to be a placeholder and the probe reported "finished
-    loading" before the request had even been sent. Then, using the *board* as
-    the data-readiness signal: the board renders with the layout shell, so that
-    reported "ready" at 0ms against a 119-character body text and an empty
-    sidebar.
-
-    So each stage has its own positive signal and both are required:
+    Readiness needs BOTH "no placeholders" AND a stage-specific positive
+    signal. Absence of loaders alone is true before chess.com's Vue app has
+    mounted the sidebar at all, and the board renders with the layout shell, so
+    neither is usable as the data signal on its own.
 
     * ``require="layout"``  the shell: no placeholders, and the board exists
     * ``require="panel"``   the review data: ``.review-rating-*`` or a tally
@@ -585,8 +574,7 @@ def ply_from_node(node: str | None) -> int | None:
     chess.com writes ``data-node="<variation>-<index>"`` on every move cell, so
     the ply is something it told us rather than something we counted. The
     captured game had 29 cells covering plies 1..29 with no gaps and no
-    duplicates; the reader before this one located "the element with the most
-    move-like cells" and then lost 3 of 29 plies to a duplicate filter.
+    duplicates.
 
     The same formula appears in ``_MOVE_TABLE_JS``. A test asserts the two stay
     in step, because if they drift the reader silently renumbers the game.
@@ -746,8 +734,8 @@ _COACH_JS = r"""
   const text = (el) => el ? ((el.innerText || el.textContent || '').trim()) : null;
   // The coach's prose is revealed word by word: revealed words sit in plain
   // spans, unrevealed ones in `.move-feedback-speech-text-hidden`. innerText
-  // honours their hidden styling, so a live read returned "You get" -- the two
-  // words revealed so far. textContent sees the whole sentence.
+  // honours their hidden styling, so it returns only what has been revealed so
+  // far; textContent sees the whole sentence.
   const speechOf = (el) => el
     ? (el.textContent || '').replace(/\s+/g, ' ').trim() : null;
   const box = document.querySelector('.move-feedback-box-component');
@@ -894,9 +882,7 @@ async def read_moves(page) -> tuple[list[dict], dict]:
 
     The ply comes from ``data-node``, which chess.com writes on every move
     cell, so the numbering is authoritative: the captured markup had 29 cells
-    with plies 1..29 and no gaps. An earlier implementation found "the element
-    with the most move-like cells" and lost 3 of 29 plies to a duplicate
-    filter; there is no such ambiguity left to guard against.
+    with plies 1..29 and no gaps. There is no ambiguity left to guard against.
 
     Returns ``(rows, diagnostics)`` where each row is
     ``{ply, number, color, san, figurine, clock_seconds, classification,
@@ -951,9 +937,9 @@ def split_tally(pairs: dict, columns: int = 2) -> tuple[dict, dict[str, dict]]:
     the same ``game-overview-row`` structure, where the classes are literally
     ``review-rating-white`` and ``review-rating-black``.
 
-    The distinction matters: the reader used to keep only the last column and
-    report one player's tally as the whole game's, which disagreed with the move
-    list it was supposed to be summarising.
+    The distinction matters: collapsing the columns into one key reports a
+    single player's tally as the whole game's, which disagrees with the move
+    list it is supposed to be summarising.
     """
     totals: dict[str, int] = {}
     by_side: dict[str, dict[str, int]] = {"white": {}, "black": {}}
@@ -997,10 +983,9 @@ async def read_summary_panel(page) -> dict:
 async def read_tally(page) -> dict[str, int]:
     """The classification counts for the WHOLE game, keyed by kind.
 
-    This used to be two readers -- a class-name tally and a text-regex fallback
-    -- merged with a preference order. One reader on the real class
-    (``tally-row-value analysis-<kind>``) is enough, so that is all there is.
-    Both columns are summed; use ``read_tally_by_side`` to see them apart.
+    One reader on the real class (``tally-row-value analysis-<kind>``) is
+    enough, so that is all there is. Both columns are summed; use
+    ``read_tally_by_side`` to see them apart.
     """
     summary = await read_summary_panel(page)
     return summary.get("move_counts") or {}
@@ -1010,7 +995,7 @@ async def read_tally_by_side(page) -> dict[str, dict[str, int]]:
     """The classification counts split by side.
 
     This is the view that makes the two numbers add up. The summary's tally row
-    is a two-column table, and reading only one column is how a review came to
+    is a two-column table, and collapsing the columns is how a review comes to
     claim three mistakes where the move list had one.
     """
     summary = await read_summary_panel(page)
@@ -1041,8 +1026,8 @@ async def find_classified(
 
 
 # Which sidebar tab plausibly holds the move list. Kept deliberately narrow:
-# the old pattern also accepted "game" and "board", and the default tab is the
-# "Game Overview", so it could click the very tab the moves are not behind.
+# the default tab is the "Game Overview", so a looser pattern could click the
+# very tab the moves are not behind.
 _MOVE_TAB = re.compile(r"\b(move|moves|movelist|notation|variation)s?\b", re.I)
 _TAB_BLOCKLIST = re.compile(r"overview|summary|settings|home|share|report|learn", re.I)
 
@@ -1272,9 +1257,8 @@ def _looks_like_a_board(clip: dict | None) -> bool:
     """True when a bounding box is plausibly the chessboard.
 
     Without this, any element whose class contains "board" qualifies -- and the
-    sidebar header gear (``board-layout-icon``, 24x24) qualifies perfectly well.
-    Hashing that gave navigation runs that "verified" moves on their own,
-    because the icon animates when you press an arrow key.
+    sidebar header gear (``board-layout-icon``, 24x24) qualifies perfectly well,
+    and animates when you press an arrow key.
     """
     if not clip:
         return False
@@ -1366,8 +1350,8 @@ class StepResult:
     """Outcome of a navigation request.
 
     ``verified`` is False when no board signal was readable. Treating "could
-    not check" as "it moved" is how the first calibration run cheerfully
-    reported ``moved 3`` on a page it could not actually read.
+    not check" as "it moved" is how a run reports moves on a page it cannot
+    actually read.
     """
 
     requested: int
@@ -1439,9 +1423,8 @@ async def step_moves(page, count: int) -> StepResult:
         if after is not None and after != before:
             result.moved += 1
         else:
-            # An unreadable "after" is NOT a move. The old `after is None or ...`
-            # counted it as one, which is the exact optimism StepResult's own
-            # docstring promises not to do.
+            # An unreadable "after" is NOT a move. ``verified`` must never
+            # default to optimistic, which is what StepResult promises.
             result.reason = (
                 "board became unreadable"
                 if after is None
@@ -1490,11 +1473,10 @@ async def goto_ply(page, ply: int) -> bool:
 
 # Where the board is, read two independent ways and cross-checked.
 #
-# The original probe counted elements with move-like text up to the active one.
-# It is wrong on the live review page, and wrong in the worst direction: it
-# reported ply 3 while the board was on ply 1, and ply 17 after a click that
-# landed on ply 9. `goto_ply` uses `active_ply` to decide whether a short step
-# is enough, so a wrong answer there steers navigation onto the wrong position
+# Counting elements with move-like text up to the active one is wrong in the
+# worst direction: on the live review page it reports a ply far ahead of the
+# board. `goto_ply` uses `active_ply` to decide whether a short step is
+# enough, so a wrong answer there steers navigation onto the wrong position
 # while reporting that it verified.
 #
 # Two real signals exist, both confirmed by `spikes/_diag_active.py`:
@@ -1504,8 +1486,8 @@ async def goto_ply(page, ply: int) -> bool:
 #   * the URL carries `?move=<index>`, and index is the ply-1
 #
 # Both are read and, when they disagree, the cell wins -- it is the thing the
-# click actually targets. Disagreement is reported rather than hidden, because
-# a silent mismatch is how this got wrong in the first place.
+# click actually targets. Disagreement is logged rather than hidden, so a
+# mismatch shows up instead of silently steering navigation.
 _ACTIVE_PLY_JS = r"""
 () => {
   const m = /[?&]move=(-?\d+)/.exec(location.href);
@@ -1557,11 +1539,10 @@ async def _click_row(page, ply: int) -> bool:
     """Click the move cell the reader counted as ``ply``.
 
     The cell tags itself while it is being parsed, so the index here is by
-    construction the same one the classification came from. The previous
-    implementation indexed into the union of ``[class*='move' i] *,
-    [class*='ply' i] *, [class*='turn' i] *``, which on the live page resolves
-    to clock, aria and icon elements as well as moves -- so ``ply - 1`` pointed
-    at an arbitrary element and navigation "succeeded" onto the wrong position.
+    construction the same one the classification came from. Indexing
+    positionally into a class-based element union is not usable: on the live
+    page that resolves to clock, aria and icon elements as well as moves, so
+    ``ply - 1`` would point at an arbitrary element.
     """
     if ply < 1:
         return False
@@ -1588,8 +1569,8 @@ async def open_review_mode(page) -> bool:
     blunder reads as a game containing no errors without it.
 
     Returns True when a control was clicked. It deliberately does not wait:
-    the caller owns the wait, and folding the two together turned a successful
-    click followed by a slow load into one indistinguishable False.
+    the caller owns the wait, and folding the two together makes a successful
+    click followed by a slow load one indistinguishable False.
     """
     for sel in REVIEW_ENTRY_SELECTORS:
         try:
@@ -1602,9 +1583,7 @@ async def open_review_mode(page) -> bool:
             continue
         # A heading is a title, not a control: the sidebar title reads
         # "Game Review". Also, Playwright's locator.evaluate binds the element
-        # as the arrow function's *parameter*, so the string must be
-        # `el => ...`; the `() => ...el...` form throws ReferenceError and
-        # aborted a calibration run before it could write its dump.
+        # as the arrow function's *parameter*, so the string must be `el => ...`.
         try:
             is_heading = await loc.evaluate("el => !!el.closest('h1, h2')")
         except _PlaywrightError as exc:
@@ -1634,9 +1613,7 @@ _INSPECT_JS = r"""
                pageClasses: [], bodyText: '', moveCells: 0, shadowRootsEntered: 0};
   const norm = (s) => String(s || '').toLowerCase();
   // At least as thorough as the reader, or calibration reasons about a page
-  // state the reader never saw. The reader pierces shadow roots; this used
-  // document.querySelectorAll('*') and reported "no classification elements
-  // found" for markup that was there.
+  // state the reader never saw. The reader pierces shadow roots; this does too.
   const deepAll = (root, outEls, depth) => {
     if (depth > 8 || !root || !root.querySelectorAll) return outEls;
     let list;
@@ -1790,8 +1767,8 @@ def pick_highest_confidence(
 def merge_counts(tally: dict[str, dict], fallback: dict[str, int]) -> dict[str, int]:
     """Prefer the class-name tally; fall back to the text parse for gaps.
 
-    Kept for callers that still have a text parse to offer. ``read_tally`` no
-    longer needs it: one reader on the real class is enough.
+    Kept for callers that still have a text parse to offer: one reader on the
+    real class is enough for ``read_tally``.
     """
     out: dict[str, int] = {}
     for kind, values in (tally or {}).items():

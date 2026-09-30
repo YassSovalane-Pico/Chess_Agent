@@ -29,6 +29,7 @@ import shutil
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import discord
@@ -1047,6 +1048,462 @@ def test_a_queued_reviewer_is_told_where_it_stands():
 
 
 # ---------------------------------------------------------------------------
+# The progress line is for the user, not for the log
+# ---------------------------------------------------------------------------
+
+
+def test_the_progress_line_never_names_a_tool_or_its_arguments():
+    """`_running `screenshot_game_move` gameurl=https://www.chess.com/...`_
+    was being edited into the one message the user is reading.
+
+    Three things wrong with it: it is code in the middle of an answer, it pastes
+    half a URL into the channel, and it says nothing the user asked to know.
+    What they want is "is it working, and on what", in words.
+
+    Every registered tool is checked, including with arguments full of things
+    that must never be printed, and an unrecognised name must not leak either --
+    the mapping is a lookup with a safe default, not a fallback to the name.
+    """
+    args = {
+        "game_url": "https://www.chess.com/game/live/184575245570?token=abc",
+        "ply": 27,
+        "label": "after e5",
+    }
+
+    async def scenario():
+        bot = discord_bot.ChessBot()
+        loop = asyncio.get_running_loop()
+        gate = discord_bot._BrowserGate(bot, loop, _FakeMessage(), loop.time())
+        lines = {name: gate._describe(name, args) for name in agent.FUNCTION_MAP}
+        lines["a_tool_from_the_future"] = gate._describe("a_tool_from_the_future", args)
+        return lines
+
+    lines = asyncio.run(scenario())
+    for name, line in lines.items():
+        assert name not in line, f"{name} leaked into the status line: {line}"
+        assert "chess.com" not in line, line
+        assert "ply" not in line and "after e5" not in line, line
+        assert line.startswith("_") and line.endswith("_"), line
+    # nearly every tool has its own phrase, so the line is actually informative
+    # rather than a single "working on it" for the whole turn
+    assert len(set(lines.values())) >= len(agent.FUNCTION_MAP) - 1, lines
+    # a tool we do not have a phrase for is described, not named
+    assert "a_tool_from_the_future" not in lines["a_tool_from_the_future"]
+
+
+def test_the_technical_progress_line_is_still_available_for_the_owner():
+    """Quiet by default, not gone: DISCORD_SHOW_TOOLS=1 puts the old line back
+    for whoever is watching the bot and needs to see which step is slow."""
+
+    async def scenario():
+        bot = discord_bot.ChessBot()
+        loop = asyncio.get_running_loop()
+        gate = discord_bot._BrowserGate(bot, loop, _FakeMessage(), loop.time())
+        return gate._describe("get_moves", {"game_url": "u"})
+
+    original = discord_bot.SHOW_TOOL_NAMES
+    discord_bot.SHOW_TOOL_NAMES = True
+    try:
+        line = asyncio.run(scenario())
+    finally:
+        discord_bot.SHOW_TOOL_NAMES = original
+    assert "`get_moves`" in line, line
+
+    discord_bot.SHOW_TOOL_NAMES = False
+    assert "get_moves" not in asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# A picture that was never produced
+# ---------------------------------------------------------------------------
+
+
+def test_a_screenshot_that_was_never_produced_says_so():
+    """The screenshot tool ran, returned an error, and the model's own text is
+    the only thing the user gets.
+
+    A model handed {"error": ...} will still write "here is the screenshot", and
+    then the picture is simply absent -- which reads as the bot ignoring the
+    request. So the front end says it, and says WHY, from the tool's own words.
+    """
+    result = agent.AgentResult(
+        text="Here is the screenshot of move 12.",
+        tools_used=["screenshot_game_move"],
+        tool_errors=[
+            (
+                "screenshot_game_move",
+                "The move list could not be read, so no move could be "
+                "photographed. Run: python dump_pages.py https://x",
+            )
+        ],
+    )
+    status = _FakeMessage("working")
+    asyncio.run(discord_bot.ChessBot()._post(status, result))
+    posted = " ".join(str(c) for c, _k in status.every_write())
+    assert "No picture came through" in posted, status.every_write()
+    assert "move list could not be read" in posted, (
+        "the reason is what the user can act on; the generic line is a dead end"
+    )
+    # the fix belongs to the owner, and the reader cannot run it
+    assert "dump_pages" not in posted, posted
+    assert "Here is the screenshot" in posted, "the answer itself was replaced"
+
+    # and it stays quiet when a picture really was attached, or when no
+    # screenshot was involved at all
+    # not TemporaryDirectory: `discord.File` still holds the PNG open
+    tmp = tempfile.mkdtemp()
+    try:
+        shot = Path(tmp) / "shot.png"
+        shot.write_bytes(b"PNG")
+        for with_artifact in (True, False):
+            status = _FakeMessage("working")
+            asyncio.run(
+                discord_bot.ChessBot()._post(
+                    status,
+                    agent.AgentResult(
+                        text="Here it is.",
+                        tools_used=(
+                            ["take_screenshot"] if with_artifact else ["get_moves"]
+                        ),
+                        artifacts=[("take_screenshot", shot)] if with_artifact else [],
+                    ),
+                )
+            )
+            posted = " ".join(str(c) for c, _k in status.every_write())
+            assert "No picture came through" not in posted, posted
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_an_expired_chess_com_session_is_named_as_the_reason():
+    """The failure that actually happens, and the one that is actionable.
+
+    Every review tool reports a missing or expired sign-in the same way, and it
+    is the most common reason a picture does not arrive. Naming it turns "the
+    bot is broken" into "the sign-in needs doing again once" -- which is true,
+    and which the user can pass to the owner.
+    """
+    for message in (
+        "Not logged in. Run 'python login_chess.py' once to save your chess.com "
+        "session, then ask again.",
+        "The session browser could not be opened.",
+    ):
+        note = discord_bot.picture_failure_note([("screenshot_game_move", message)])
+        if "not logged in" in message.lower():
+            assert note == discord_bot._EXPIRED_NOTE, note
+            assert "expired" in note, note
+            assert "login" not in note.lower() or "sign-in" in note, note
+        else:
+            assert "No picture" in note, note
+
+    # the note must not tell the reader to run something on the owner's machine
+    assert "python" not in discord_bot._EXPIRED_NOTE.lower()
+
+
+def test_the_failure_note_falls_back_rather_than_inventing_a_reason():
+    assert "No picture came through" in discord_bot.picture_failure_note([])
+    assert "No picture came through" in discord_bot.picture_failure_note(
+        [("take_screenshot", "")]
+    )
+    # two different reasons, both said, each once
+    note = discord_bot.picture_failure_note(
+        [
+            ("get_moves", "the page did not load"),
+            ("take_screenshot", "the page did not load"),
+            ("get_review_state", "board not found"),
+        ]
+    )
+    assert note.count("did not load") == 1, note
+    assert "board not found" in note, note
+
+
+def test_the_sign_in_file_age_is_reported_as_an_age_not_a_verdict():
+    """`!status` says how old the saved session file is.
+
+    It cannot know whether chess.com still accepts the cookie without loading a
+    page, so it must not claim the session is expired -- that would be a
+    plausible wrong value, which is the one thing this project keeps designing
+    against. Age, and a hint.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp) / "storage_state.json"
+        state.write_text("{}")
+        original = os.environ.get("CHESS_AGENT_STATE")
+        os.environ["CHESS_AGENT_STATE"] = str(state)
+        try:
+            assert "days old" in discord_bot.chess_com_sign_in_age()
+            fresh = discord_bot.chess_com_sign_in_age()
+            assert "login_chess" not in fresh, fresh
+            # a genuinely old file earns the warning
+            old = time.time() - 90 * 86400
+            os.utime(state, (old, old))
+            stale = discord_bot.chess_com_sign_in_age()
+            assert "login_chess" in stale, stale
+            # and no file at all is not a claim either way
+            os.environ["CHESS_AGENT_STATE"] = str(Path(tmp) / "missing.json")
+            assert discord_bot.chess_com_sign_in_age() == ""
+        finally:
+            if original is None:
+                os.environ.pop("CHESS_AGENT_STATE", None)
+            else:
+                os.environ["CHESS_AGENT_STATE"] = original
+
+
+def test_the_turn_records_why_a_tool_failed():
+    """A missing picture is only reportable if the reason survived the turn.
+
+    The tools report failure as an `error` key, the model is handed that key and
+    writes prose about it, and the front end never sees a tool's return value --
+    so without this the only thing anyone can say is "no picture came through",
+    which is the dead end this whole path exists to avoid.
+    """
+
+    class _Call:
+        def __init__(self, name, args=None):
+            self.name = name
+            self.args = args or {}
+
+    class _Response:
+        def __init__(self, text=None, calls=()):
+            self.text = text
+            self.function_calls = list(calls)
+
+    class _Chat:
+        def __init__(self):
+            self.sent = 0
+
+        def send_message(self, message):
+            self.sent += 1
+            if self.sent == 1:
+                return _Response(
+                    calls=[
+                        _Call("screenshot_game_move", {"game_url": "u"}),
+                        _Call("get_moves", {"game_url": "u"}),
+                        _Call("where_am_i"),
+                    ]
+                )
+            return _Response(text="Here it is.")
+
+    original = dict(agent.FUNCTION_MAP)
+    agent.FUNCTION_MAP["screenshot_game_move"] = lambda **kw: {
+        "error": "Not logged in. Run 'python login_chess.py' once."
+    }
+    agent.FUNCTION_MAP["get_moves"] = lambda **kw: {"moves": []}
+    agent.FUNCTION_MAP["where_am_i"] = lambda **kw: {"session_open": False}
+    try:
+        errors: list = []
+        _text, tools, artifacts = agent.run_agent(_Chat(), "show me", errors=errors)
+    finally:
+        agent.FUNCTION_MAP.clear()
+        agent.FUNCTION_MAP.update(original)
+
+    assert not artifacts, "no file was written, so nothing should be collected"
+    assert errors == [
+        ("screenshot_game_move", "Not logged in. Run 'python login_chess.py' once.")
+    ], errors
+    # a tool that succeeded contributes nothing, even though it ran
+    assert "get_moves" not in [name for name, _m in errors]
+    assert "get_moves" in tools, "tools_used is what the model asked for"
+
+    # a turn that dies mid-way still carries what the tools had already said
+    class _Dying:
+        def __init__(self):
+            self.sent = 0
+
+        def send_message(self, message):
+            self.sent += 1
+            if self.sent == 1:
+                return _Response(calls=[_Call("screenshot_game_move")])
+            raise RuntimeError("the socket went away")
+
+    original = agent.FUNCTION_MAP["screenshot_game_move"]
+    agent.FUNCTION_MAP["screenshot_game_move"] = lambda **kw: {"error": "nope"}
+    try:
+        session = agent.AgentSession.__new__(agent.AgentSession)
+        session._client = object()
+        session._note = ""
+        session._max_turns = 5
+        session.turns = 0
+        session._chat = _Dying()
+        result = session.ask("show me the brilliant move")
+    finally:
+        agent.FUNCTION_MAP["screenshot_game_move"] = original
+    assert result.error is not None
+    assert result.tool_errors == [("screenshot_game_move", "nope")], result.tool_errors
+
+
+def test_several_pictures_in_one_turn_are_all_collected():
+    """The user asks for three moves; three distinct files must all be attached.
+
+    `seen` is shared for the whole turn, so a repeated path is attached once --
+    which is why every screenshot tool has to write a NEW file each time. That
+    pairing is what this pair of tests pins.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        shots = []
+        for i in range(3):
+            path = Path(tmp) / f"shot_board_{i}.png"
+            path.write_bytes(b"PNG")
+            shots.append(path)
+        seen: set = set()
+        found = []
+        for path in shots:
+            found.extend(
+                agent.collect_artifacts(
+                    {"screenshot": str(path)}, "take_screenshot", seen=seen
+                )
+            )
+        assert [p for _t, p in found] == shots, found
+        # and one path reached twice is still one attachment
+        again = agent.collect_artifacts(
+            {"a": str(shots[0]), "b": str(shots[0])}, "take_screenshot", seen=seen
+        )
+        assert again == [], again
+
+
+# ---------------------------------------------------------------------------
+# Memory: the conversation outlives the model's own history
+# ---------------------------------------------------------------------------
+
+
+class _RecordingChat:
+    """A Gemini chat that keeps every message it was asked to send."""
+
+    def __init__(self, answer="ok"):
+        self.messages = []
+        self.answer = answer
+
+    def send_message(self, message):
+        self.messages.append(message)
+        return type("R", (), {"text": self.answer, "function_calls": []})()
+
+
+@contextmanager
+def _recording_chats(answer="ok", created=None):
+    """Patch chat creation for the whole block, not just the constructor.
+
+    A session creates its chat lazily, on the first turn -- so a patch that is
+    undone when the constructor returns leaves every `ask` running the real
+    `create_chat` against a bare `object()`.
+    """
+    original = agent.create_chat
+
+    def fake_create_chat(client, platform_note=""):
+        chat = _RecordingChat(answer)
+        if created is not None:
+            created.append(chat)
+        return chat
+
+    agent.create_chat = fake_create_chat
+    try:
+        yield
+    finally:
+        agent.create_chat = original
+
+
+def test_the_conversation_is_remembered_across_a_reset():
+    """The complaint: "I just sent you a link, asked about it later, and you
+    asked me for the link again".
+
+    The turn cap replaces the Gemini chat, and the old chat is unrecoverable --
+    so the memory has to live on the session, not in the chat. The new chat's
+    first message must therefore carry what the user already said.
+    """
+    created: list = []
+    link = "https://www.chess.com/game/live/184575245570"
+    with _recording_chats(answer="White 69.3 - Black 79.9", created=created):
+        session = agent.AgentSession(client=object(), max_turns=2)
+
+        session.ask(f"analyse {link}")
+        # the first turn of a conversation carries no preamble at all
+        assert created[0].messages[0] == f"analyse {link}"
+
+        session.ask("how accurate was I?")
+        assert agent.MEMORY_FOOTER.lower() in created[0].messages[1].lower()
+        assert link in created[0].messages[1]
+
+        third = session.ask("which game was that?")
+    assert third.history_reset is True, "the cap was not enforced"
+    assert len(created) == 2, "a fresh chat was not started"
+    sent = created[1].messages[0]
+    assert link in sent, "the link from two turns ago is gone after the reset"
+    assert "how accurate was I?" in sent
+    assert sent.rstrip().endswith("which game was that?"), (
+        "the new message must come last, or the model answers the memory"
+    )
+    # and the user is told the conversation carries over, so the reset does not
+    # read as the bot losing the thread
+    assert "fresh conversation" in third.text
+    assert "do not have to repeat yourself" in third.text
+
+
+def test_the_memory_is_bounded_and_keeps_the_newest_turns():
+    """It is prepended to every message, so it cannot grow without limit -- and
+    a half-remembered exchange is worse than none, so the budget drops whole
+    turns from the OLD end rather than cutting one in half."""
+    memory = agent.ConversationMemory(exchanges=3, item_chars=60, total_chars=2000)
+    for i in range(9):
+        memory.remember(f"question {i}", f"answer {i}")
+    assert len(memory) == 3
+    block = memory.as_preamble()
+    assert "question 8" in block and "question 6" in block
+    assert "question 5" not in block, "the oldest turn was not dropped"
+    assert block.count("- user:") == 3
+    assert block.rstrip().endswith(agent.MEMORY_FOOTER)
+
+    # a turn too big for the budget is not partially remembered
+    tight = agent.ConversationMemory(exchanges=4, item_chars=400, total_chars=200)
+    for i in range(3):
+        tight.remember("x" * 300, "y" * 300)
+    assert tight.lines() == [], tight.lines()
+    assert tight.as_preamble() == "", "a memory with no room must say nothing"
+    assert tight.decorate("hello") == "hello"
+
+    # and whitespace is collapsed: this is carried on every turn
+    wide = agent.ConversationMemory(exchanges=5, item_chars=200, total_chars=2000)
+    wide.remember("a\n\nb   c", "x\n| y | z")
+    assert wide.lines() == ["- user: a b c\n- you: x | y | z"], wide.lines()
+
+    # a turn with no answer is not worth remembering
+    blank = agent.ConversationMemory()
+    blank.remember("question", "")
+    blank.remember("", "answer")
+    assert len(blank) == 0
+
+
+def test_a_session_built_without_init_still_has_a_memory():
+    """`AgentSession.__new__` is how the tests reach one failing turn without a
+    client, so the memory cannot be an attribute that only `__init__` sets."""
+    session = agent.AgentSession.__new__(agent.AgentSession)
+    session._client = object()
+    session._note = ""
+    session._max_turns = 5
+    session.turns = 0
+    session._chat = _RecordingChat("hi")
+    result = session.ask("hello")
+    assert result.error is None, result.text
+    assert len(session.memory) == 1
+
+
+def test_an_explicit_reset_forgets_the_memory_too():
+    """`!reset` is the user asking for a clean slate, so the memory goes with
+    the chat -- the opposite of the turn-cap reset, which nobody asked for."""
+    created: list = []
+    with _recording_chats(created=created):
+        session = agent.AgentSession(client=object())
+        session.ask("remember this link")
+        assert len(session.memory) == 1
+        session.reset()
+        assert session.turns == 0
+        assert len(session.memory) == 0
+        assert session.memory.as_preamble() == ""
+        session.ask("what did I just send?")
+    assert created[-1].messages[0] == "what did I just send?", (
+        "a remembered exchange survived an explicit reset"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Nothing this bot posts can ping anybody
 # ---------------------------------------------------------------------------
 
@@ -1595,6 +2052,46 @@ def test_screenshots_are_batched_by_size_as_well_as_count():
             discord_bot.MAX_ATTACHMENT_BYTES = original
         assert [p for b in batches for _t, p in b] == [small[0]], batches
     finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_frame_the_budget_refuses_is_told_to_the_user():
+    """The other way to lose a picture, and the quieter one.
+
+    A frame over the per-file limit is dropped before Discord is even asked, so
+    there is no HTTP error, nothing in the channel, and nothing but a log line
+    to say the blunder frame did not arrive. The user asked for pictures and
+    gets the text with no explanation, which is the same complaint as a
+    screenshot tool that failed.
+    """
+    # not TemporaryDirectory: `discord.File` still holds the PNG open
+    tmp = tempfile.mkdtemp()
+    original = discord_bot.MAX_ATTACHMENT_BYTES
+    discord_bot.MAX_ATTACHMENT_BYTES = 1500
+    try:
+        root = Path(tmp)
+        ok = root / "summary.png"
+        huge = root / "viewport.png"
+        ok.write_bytes(b"\0" * 1000)
+        huge.write_bytes(b"\0" * 9000)
+
+        async def scenario():
+            bot = discord_bot.ChessBot()
+            status = _FakeMessage("working", channel=_FakeChannel())
+            await bot._attach(
+                status,
+                [("take_screenshot", ok), ("take_screenshot", huge)],
+            )
+            return status
+
+        status = asyncio.run(scenario())
+        sent = [c for c, _kw in status.channel.sent if c]
+        assert any("too large" in c for c in sent), sent
+        # and the one that fitted was still posted
+        attached = [c for c, kw in status.channel.sent if kw.get("files")]
+        assert len(attached) == 1, attached
+    finally:
+        discord_bot.MAX_ATTACHMENT_BYTES = original
         shutil.rmtree(tmp, ignore_errors=True)
 
 

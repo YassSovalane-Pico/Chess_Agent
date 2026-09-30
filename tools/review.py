@@ -39,7 +39,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import move_list
-from .common import load_browser_profile, session_state_path
+from .common import (
+    load_browser_profile,
+    session_state_path,
+    unique_shot_path,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -52,8 +56,7 @@ _LOG = logging.getLogger(__name__)
 try:  # pragma: no cover - depends on whether playwright is installed
     from playwright.async_api import Error as _PlaywrightError
 except ImportError:  # pragma: no cover - playwright is an optional dependency
-    # Nothing below can reach a browser without playwright anyway; keep the
-    # historical broad catch so behaviour is unchanged in that environment.
+    # Nothing below can reach a browser without playwright anyway.
     _PlaywrightError = Exception
 
 # ---------------------------------------------------------------------------
@@ -67,11 +70,8 @@ VIEWPORT = {"width": 1920, "height": 1080}
 # The viewport the review actually runs at.
 #
 # This is the lever on frame width. The board is height-constrained -- it is
-# sized to the available height, not the width -- so at 1920x1080 it rendered
-# ~980px wide and a board+panel frame came out at 1480px. That is a lot of
-# picture for one move, and the user asked for something tighter. At 1400x820
-# the board renders ~700px and the frame lands near 1150px wide: same
-# composition, proportionate.
+# sized to the available height, not the width -- so at 1920x1080 it renders
+# ~980px wide, and at the 1400x820 default ~700px.
 #
 # Floors are deliberate. Below ~1200 wide chess.com starts reflowing the
 # analysis page and the review sidebar stops being beside the board; below
@@ -104,9 +104,9 @@ def _configured_viewport() -> dict:
     return {"width": width, "height": height}
 
 
-# No hardcoded UA any more. If login_chess.py recorded the real browser's UA we
-# replay that exact string; otherwise we do not override the UA at all, which
-# is always better than claiming to be a two-year-old Chrome build.
+# Replay login_chess.py's recorded UA when there is one; otherwise do not
+# override the UA at all, which is always better than claiming to be an old
+# Chrome build.
 _PROFILE = load_browser_profile()
 USER_AGENT = _PROFILE.get("user_agent") or None
 
@@ -155,11 +155,10 @@ MAX_MOVE_SHOTS = 10
 SHOT_PADDING = int(os.getenv("REVIEW_SHOT_PADDING", "12"))
 
 # A chessboard is square. This is the tolerance for deciding what counts as
-# "the board" when cropping, and it is deliberately tight: at 0.85..1.18 an
-# 800x1080 layout column (nameplate, clock, controls) passed as the board and
-# the frame carried the player's nameplate. A real board is square to within
-# about 1%. Stricter than the signature check in move_list, which only needs a
-# hint and so can afford to be lenient.
+# "the board" when cropping, and it is deliberately tight: a real board is
+# square to within about 1%, and anything looser admits the 800x1080 layout
+# column (nameplate, clock, controls) as the board. Stricter than the signature
+# check in move_list, which only needs a hint and so can afford to be lenient.
 MIN_BOARD_ASPECT = 0.99
 MAX_BOARD_ASPECT = 1.01
 
@@ -238,8 +237,7 @@ CLASS_COLORS = {
 # notable_moves even though the tally counts them.
 NOTABLE = frozenset({"brilliant", "great", "blunder", "inaccuracy", "mistake", "miss"})
 
-# Kept for backwards compatibility. move_list.py does the real detection;
-# these are only the legacy fallback selectors.
+# Legacy fallback selectors only -- move_list.py does the real detection.
 CLASSIFICATION_SELECTORS = {
     "brilliant": [
         "[class*='brilliant' i]",
@@ -324,16 +322,21 @@ def _build_review_url(game_url: str) -> tuple[str, str, str]:
 
 
 def _shot_path(kind: str, game_id: str, stamp: str, label: str = "") -> Path:
-    """Path for one screenshot.
+    """Path for one screenshot, guaranteed not to already exist.
 
-    ``label`` disambiguates several shots of the same kind -- which is the
-    normal case now, because a game with three brilliants gets three frames:
+    ``label`` disambiguates several shots of the same kind: a game with three
+    brilliants gets three frames, e.g.
     ``brilliant_m14_ply27_<id>_<stamp>.png``.
+
+    `unique_shot_path` covers the case the label cannot: two *calls* that want
+    the same name in the same second, which is what happens when a turn
+    photographs the same game or region more than once. Without it the second
+    write overwrites the first, and the chat front end -- which attaches by
+    path and de-duplicates -- sends one picture for two requests.
     """
     shots_dir = _project_root() / "screenshots"
-    shots_dir.mkdir(exist_ok=True)
     stem = f"{kind}_{label}" if label else kind
-    return shots_dir / f"{stem}_{game_id}_{stamp}.png"
+    return unique_shot_path(shots_dir, f"{stem}_{game_id}", stamp)
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +391,8 @@ async def _new_logged_in_page(p, browser, state_path: Path):
 class _Session:
     """Owns the browser + context so both are closed exactly once.
 
-    The old flow closed the browser on early-return paths *and* again in a
-    `finally`, and threw the context away without closing it.
+    Closing is idempotent, so an early return and the ``finally`` cannot close
+    either handle twice.
     """
 
     def __init__(self, p, browser, context, page):
@@ -451,16 +454,14 @@ async def _wait_for_review_ready(page) -> bool:
     """Kept for backwards compatibility.
 
     Superseded by ``move_list.wait_for_review_loaded``, which waits for the
-    review data to actually appear instead of for the word "Accuracy" -- that
-    word is in the sidebar header from the first paint, so the old check
-    returned immediately on a still-skeleton page.
+    review data to actually appear rather than for the word "Accuracy" -- that
+    word is in the sidebar header from the first paint.
     """
     return await move_list.wait_for_review_loaded(page, require="panel")
 
 
-# Strict, adjacency-only patterns. The old code used
-# ``rf"{label}\\D*(\\d+)\\D+(\\d+)"``, whose ``\\D+`` happily spanned other labels
-# and reported e.g. the *mistake* count as the black-side *blunder* count.
+# Strict, adjacency-only patterns: each label must be immediately followed by
+# its own number, so the separators cannot span across into the next label.
 _COUNT_RE = re.compile(
     r"\b(Brilliant|Great(?:\s*move|\s*find)?|Best(?:\s*move)?|Book|Mistake|"
     r"Miss(?:ed|es)?|Blunder)\b"
@@ -470,9 +471,8 @@ _COUNT_RE = re.compile(
 _ACCURACY_ANCHORS = ("Accuracy", "Game Review", "Review Summary", "Score")
 _WHITE_RE = re.compile(r"\b(?:white|you|top)\b[^\d]{0,15}?(\d{1,3}(?:\.\d+)?)", re.I)
 _BLACK_RE = re.compile(r"\bblack\b[^\d]{0,15}?(\d{1,3}(?:\.\d+)?)", re.I)
-# One OR two decimals. The old `\d{2,3}\.\d` required a word boundary right
-# after a single decimal digit, so "85.35 79.15" matched nothing at all and the
-# accuracy silently came back as None.
+# One or two decimals, with a trailing word boundary so that a pair like
+# "85.35 79.15" matches both numbers.
 _DECIMAL_RE = re.compile(r"\b(\d{1,3}\.\d{1,2})\b")
 
 # How much panel text to consider once the anchor is found. Wide enough to hold
@@ -512,8 +512,7 @@ def parse_review_panel(text: str) -> tuple[float | None, float | None, dict[str,
 
     Returns (white_accuracy, black_accuracy, counts) where counts maps a
     classification name to a single integer. It deliberately returns None
-    rather than guessing: the previous version could invent a number, and the
-    system prompt then stated that number to the user as fact.
+    rather than guessing: an invented number gets stated to the user as fact.
 
     Accepts "White 71.5 Black 68.8", "85/100", and a legend line like
     "Blunder 2". Anything it cannot read confidently comes back as None / {}.
@@ -584,10 +583,9 @@ async def _first_visible(page, selectors: list[str]):
 # Annotation workflow (bounding boxes + JSON map for the vision LLM)
 # ---------------------------------------------------------------------------
 
-# Draws boxes from *measured* Playwright bounding boxes. It no longer runs a
-# CSS query at all: the old version passed Playwright selectors like
-# `text=Accuracy` into `document.querySelector`, which throws, and the JS
-# swallowed the error -- so those targets were silently never annotated.
+# Draws boxes from *measured* Playwright bounding boxes only. Queries are
+# Playwright selectors (`text=`, `:has-text()`), which document.querySelector
+# cannot parse, so no CSS query is run in the page at all.
 _DRAW_BOXES_JS = r"""
 (boxes) => {
   document.querySelectorAll('[data-ai-anno]').forEach(e => e.remove());
@@ -658,12 +656,10 @@ async def annotate_page_elements(page, queries: list[dict] | None = None) -> dic
             continue
         # The overlay is position:fixed and the screenshot is viewport-only, so
         # a target below the fold cannot be annotated at all. Scrolling it into
-        # view was the previous answer, and it was wrong: each scroll moved
-        # every box already measured, so the boxes drawn on the screenshot
-        # pointed at the wrong elements. Refusing to draw is honest; drawing a
-        # box that lands on the wrong element is not.
-        # Measured against the page's own viewport, not a constant, so a
-        # narrower configured window does not start skipping everything.
+        # view would move every box already measured, leaving them pointing at
+        # the wrong elements, so the box is refused instead. Measured against
+        # the page's own viewport, not a constant, so a narrower configured
+        # window does not start skipping everything.
         view_h = (getattr(page, "viewport_size", None) or _configured_viewport())[
             "height"
         ]
@@ -758,9 +754,9 @@ async def _first_box(page, selectors: list[str], min_px: float = 120.0):
 def _is_square(box: dict | None, min_px: float = 120.0) -> bool:
     """True when a bounding box is a usable square.
 
-    Strict on purpose. An earlier tolerance of 0.85..1.18 let an 800x1080
-    layout column through as "the board" -- so the crop carried the player
-    nameplate and the clock. A real board is square to within about 1%.
+    Strict on purpose: a real board is square to within about 1%, and a looser
+    tolerance lets the 800x1080 layout column (nameplate, clock, controls)
+    through as "the board".
     """
     if not box:
         return False
@@ -773,9 +769,9 @@ def _is_square(box: dict | None, min_px: float = 120.0) -> bool:
 async def _square_box(page, selectors: list[str], min_px: float = 120.0):
     """First *square* box across `selectors`, or None.
 
-    Squareness is what separates the board from the layout column around it.
-    The user asked for a tighter frame, so the board must be identified as a
-    square rather than as anything with "board" in its class.
+    Squareness is what separates the board from the layout column around it,
+    so the board is identified as a square rather than as anything with "board"
+    in its class.
     """
     for sel in selectors:
         try:
@@ -927,9 +923,7 @@ def _describe_move(target: dict, page_url: str) -> dict:
     """Turn a parsed row into the shape the model and the reply both need.
 
     ``color`` is the side that played the move ("white"/"black"), which the
-    move-list cell carries; it used to hold the legend blurb instead, so the
-    system prompt's "(<move>, <color> marker)" line had no real colour to
-    print. The blurb moves to ``marker`` where it belongs.
+    move-list cell carries. The legend blurb belongs in ``marker``.
     """
     kind = target.get("classification")
     number = target.get("number")
@@ -1022,7 +1016,7 @@ async def walk_moves(page, plies: list[int]) -> dict[int, bool]:
     """Visit several plies in order, e.g. to capture a sequence of positions.
 
     Returns {ply: moved_ok}. Useful for the "show me what happened around
-    move 29" follow-up question, which the old pipeline could not answer.
+    move 29" follow-up question.
     """
     out: dict[int, bool] = {}
     for ply in plies:
@@ -1036,12 +1030,10 @@ async def open_review_mode(page) -> bool:
     Thin wrapper around ``move_list.open_review_mode``, which owns the logic
     and knows both the "Game Review" and "Start Review" labels.
 
-    Opt-in only, and deliberately not part of the default flow. The old code
-    clicked this and then immediately did a `page.goto(?move=N)`, which tore
-    the review session straight back down -- so the screenshot ended up of a
-    cold page with no board tint and no coach bubble, i.e. the click bought
-    nothing. In-page navigation (goto_move) replaces it for normal use; call
-    this when you specifically want the auto-playing coach.
+    Opt-in only, and deliberately not part of the default flow: the review
+    session, board tint and coach bubble only survive in-page navigation
+    (goto_move), not a `page.goto(?move=N)`. Call this when you specifically
+    want the auto-playing coach.
     """
     return await move_list.open_review_mode(page)
 
@@ -1080,8 +1072,7 @@ def _run(coro_factory, *args) -> dict:
 
     Every tool here is a *synchronous* entry point for the agent loop, which
     JSON-serialises the return value. An ``async def`` tool would hand back a
-    coroutine and raise "Object of type coroutine is not JSON serializable",
-    aborting the turn -- which is exactly what happened once already.
+    coroutine object instead of a dict.
     """
     try:
         return asyncio.run(coro_factory(*args))
@@ -1142,8 +1133,8 @@ async def _load_review_page(session: _Session, review_url: str, headed: bool):
     if blocked:
         return blocked
 
-    # Correct guard: we land on /analysis/... normally, so the fallback only
-    # fires when chess.com bounced us to a consent/login/interstitial page.
+    # We land on /analysis/... normally, so this fallback only fires when
+    # chess.com bounced us to a consent/login/interstitial page.
     if "/analysis/" not in page.url:
         _LOG.info("bounced off the review page (%s), trying the tab", page.url)
         btn = await _first_visible(
@@ -1163,10 +1154,9 @@ async def _load_review_page(session: _Session, review_url: str, headed: bool):
 
     # Two-stage wait. The layout shell mounts in well under a second; the
     # review data (accuracy pair, tally, move list) is computed server-side and
-    # takes much longer. Two mistakes are being guarded against here: waiting
-    # only for the absence of loaders (true before the app has mounted
-    # anything) and using the board as the data signal (the board renders with
-    # the shell, so that reported "ready" at 0ms against an empty sidebar).
+    # takes much longer. Each stage needs BOTH signals -- "no placeholders" is
+    # already true before the app has mounted anything, and the board renders
+    # with the shell, so neither alone means the review data has arrived.
     layout_ready = await move_list.wait_for_review_loaded(page, require="layout")
     if not layout_ready:
         _LOG.warning("review layout did not mount; results will be incomplete")
@@ -1341,7 +1331,8 @@ async def _run_review_async(game_url: str) -> dict:
         "note": "Screenshots are clipped to the board and the review panel; "
         "chess.com's left navigation is not included. The summary frame shows "
         "the fully expanded classification tally. Reply with the accuracy "
-        "numbers, the notable moves, and these file paths.",
+        "numbers, the notable moves, and what each frame shows -- the files "
+        "are attached to your reply automatically, so do not print the paths.",
     }
 
 
@@ -1437,10 +1428,8 @@ def _move_summary(m: dict) -> dict:
     Accepts either a reader row (which calls the sidebar's move number
     ``number`` and the verdict ``classification``) or an ``_describe_move``
     result (``move_number`` and ``kind``). Both are read here rather than at
-    each call site, because guessing wrong is silent: a live run reported
-    ``move_number: null`` and ``classification: null`` for a blunder it had
-    otherwise found perfectly, purely because this function looked for the
-    wrong key.
+    each call site, because guessing wrong is silent: it yields None for the move
+    number and the verdict, so a found move reports as empty.
     """
     return {
         "ply": m.get("ply"),
@@ -1890,7 +1879,14 @@ async def _screenshot_move_async(
             )
         summary = _move_summary(described)
         path = _shot_path("move", game_id, stamp, _shot_label(summary))
-        await screenshot_review_area(page, path)
+        # Measure the frame BEFORE shooting, so the reply can say what the user
+        # is actually going to be sent. `screenshot_review_area` falls back to
+        # the whole window when the board cannot be located, and a full-window
+        # photograph of a review page is not "the position after 12...e4" --
+        # without this the model describes a tight board frame and the user
+        # gets the entire page instead.
+        clip = await content_clip(page)
+        await screenshot_review_area(page, path, clip)
         summary["evidence"] = described.get("evidence")
         summary["screenshot"] = str(path)
         return {
@@ -1898,8 +1894,10 @@ async def _screenshot_move_async(
             "review_url": review_url,
             "move": described,
             "moves_read": diag.get("coverage") or len(rows),
+            "framed": "board and review panel" if clip else "whole page (fallback)",
             "note": "The frame is clipped to the board and the review panel. "
-            "The navigation is not included.",
+            "The navigation is not included. The picture is attached to your "
+            "reply automatically -- never print the file path.",
         }
 
 
@@ -1932,8 +1930,12 @@ def screenshot_game_move(
 
     Returns:
         On success: {"move": {san, move_number, color, ply, classification,
-        confidence, evidence, url, screenshot}, "moves_read": "29/29", ...}
-        where "screenshot" is the absolute path of the PNG.
+        confidence, evidence, url, screenshot}, "moves_read": "29/29",
+        "framed": "board and review panel", ...}
+        where "screenshot" is the absolute path of the PNG and `framed` says
+        what is actually in it. `framed` is "whole page (fallback)" when the
+        board could not be located, which is NOT the position the user asked
+        for -- say so rather than describing a board frame that is not there.
         On failure: {"error": "..."} -- including when the move does not exist
         or is ambiguous, in which case the message says what is available.
     """
@@ -1944,10 +1946,8 @@ def review_game_screenshots(game_url: str) -> dict:
     """Review a chess.com game and save annotated screenshots.
 
     This is the Gemini tool entry point, so it is deliberately **synchronous**
-    even though the whole pipeline underneath is async. An earlier version was
-    accidentally declared `async def`, which handed the agent loop a coroutine
-    object; `from_function_response` then failed with "Object of type coroutine
-    is not JSON serializable" and the review silently never ran.
+    even though the whole pipeline underneath is async. An `async def` would
+    hand the agent loop a coroutine object instead of a JSON-serialisable dict.
 
     Use this when the user gives a chess.com /game/ link and asks for a game
     review, brilliant/blunder moves, accuracy, or screenshots. It needs a

@@ -1,7 +1,7 @@
 """Discord front end for the chess agent.
 
-Same agent as the terminal (`agent.py`), different manners. The things that
-actually had to be designed rather than copied:
+Same agent as the terminal (`agent.py`), different manners. The things that had
+to be designed rather than copied:
 
 **Nothing blocks the event loop.** A review drives a real Chromium and takes
 30 seconds to two minutes. Calling that inline would freeze the bot for every
@@ -13,11 +13,9 @@ internally, which is fine in a thread with no running loop and would be a
 **One browser at a time -- and only the browser.** The tools share one
 `storage_state.json` and one Chromium profile, so two concurrent reviews would
 fight over it. But only five of the seven tools touch either; the other two are
-plain HTTPS calls to chess.com. An earlier version put the *whole turn* behind
-one lock, which meant a two-second "how was my last game?" waited two minutes
-behind somebody's review and was told, incorrectly, that it was queued behind
-the browser. So the lock is now taken per tool call, through the `ToolGate`
-hook in `agent.py`, and only for `agent.BROWSER_TOOLS`.
+plain HTTPS calls to chess.com, and a two-second "how was my last game?" must
+not wait out a two-minute review. So the lock is taken per tool call, through
+the `ToolGate` hook in `agent.py`, and only for `agent.BROWSER_TOOLS`.
 
 **A hung turn cannot take the bot down with it.** A tool that never returns
 would otherwise hold the browser lock for ever and every later request would
@@ -28,6 +26,18 @@ watchdog frees the lock afterwards so the queue drains.
 writes prose about them -- correct for a terminal, useless on Discord. The
 files are collected at the tool boundary in `agent.py` and attached to the
 reply, and the model is told not to print paths.
+
+**The progress line is written for the person reading it.** One message is
+edited as the turn proceeds, and it says what is happening in words -- "reading
+the move list", "taking a screenshot" -- never the tool name and never its
+arguments. `DISCORD_SHOW_TOOLS=1` brings the technical line back for the owner
+watching the bot, which is the only audience it was ever for.
+
+**A picture that was not produced is announced.** A model handed `{"error":
+...}` will still write "here is the screenshot", and the user then finds nothing
+attached. If a screenshot tool ran and the turn carries no file, `_post` says so
+itself, because that is a fact about the turn rather than about the model's
+willingness to admit a failure.
 
 **Nothing this bot posts can ping anyone.** Replies carry
 `AllowedMentions.none()`. `discord.py` defaults to parsing everyone, users and
@@ -56,14 +66,13 @@ from google import genai
 import agent
 import project_env
 from tools import configure_logging
+from tools.common import session_state_path
 from tools.session import get_session
 
 project_env.load_env()
 # `configure_logging`, not `logging.basicConfig`: importing `agent` above has
 # already run it, and `basicConfig` is a documented no-op once the root logger
-# has a handler -- so the level and format written here used to be discarded
-# without a word. It now really does apply, which is where the timestamps come
-# from: this process runs for days, and an undated log is unreadable.
+# has a handler. The timestamps are the point -- this process runs for days.
 configure_logging(fmt="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 _LOG = logging.getLogger("discord_bot")
 
@@ -81,6 +90,43 @@ TYPING_REFRESH_SECONDS = 8
 # a failed one from the user's side, so status lines are spaced out instead. The
 # FINAL edit in `_post` is never throttled -- by then nothing else is competing.
 STATUS_EDIT_MIN_INTERVAL = 1.0
+
+# What the progress line says while a tool runs.
+#
+# NOT the tool name and NOT its arguments. The line used to be
+# `_running `screenshot_game_move` gameurl=https://www.chess.com/game/live/...`_
+# -- a log line, edited into the one message the user is reading, in the middle
+# of the answer they asked for. It reads as the bot talking to itself in code,
+# it leaks a half-URL into the channel, and it says nothing the user wanted to
+# know. What they want to know is whether it is working, and on what.
+#
+# Set DISCORD_SHOW_TOOLS=1 to get the technical line back (useful when the owner
+# is watching the bot and needs to see which step is slow).
+SHOW_TOOL_NAMES = os.getenv("DISCORD_SHOW_TOOLS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# One plain-English phrase per tool. A tool missing here falls back to
+# DEFAULT_PROGRESS rather than leaking its name, which is the whole point.
+TOOL_PROGRESS = {
+    "get_recent_games": "looking up recent games",
+    "get_player_profile": "looking up that player",
+    "review_game_screenshots": "reading the game review",
+    "get_review_state": "reading the review summary",
+    "get_moves": "reading the move list",
+    "get_coach_commentary": "reading the coach's notes",
+    "screenshot_game_move": "taking the picture of that move",
+    "open_chess_page": "opening the page",
+    "where_am_i": "checking what is on screen",
+    "move_board": "moving the board",
+    "goto_move_in_game": "going to that move",
+    "take_screenshot": "taking a screenshot",
+    "close_browser_session": "closing the browser",
+}
+DEFAULT_PROGRESS = "working on it"
 
 # How long one turn may take, browser queue included. Long enough for a real
 # review (the Cloudflare wait alone is 90s), short enough that a wedged tool is
@@ -131,6 +177,105 @@ INTENTS.message_content = True
 # visible where the text is written.
 NO_MENTIONS = discord.AllowedMentions.none()
 
+# The tools whose job is to produce a picture. If one of these ran and the turn
+# carries no artifact, the user has been told nothing about why the picture they
+# asked for did not arrive -- and the model's own text is the only thing they
+# get, and a model that was handed {"error": ...} will happily still write
+# "here is the screenshot".
+SHOT_TOOLS = frozenset(
+    {
+        "take_screenshot",
+        "screenshot_game_move",
+        "review_game_screenshots",
+    }
+)
+MISSING_SHOT_NOTE = (
+    "_(No picture came through: the screenshot step did not produce one. "
+    "Everything above is what I could read from chess.com.)_"
+)
+
+# The one failure the user can do something about, and the one that happens
+# most: chess.com's saved session expires. Every review tool says the same
+# thing about it, so it is matched on rather than on the tool name.
+_EXPIRED_SESSION = ("not logged in", "login_chess")
+_EXPIRED_NOTE = (
+    "_(No picture: my chess.com sign-in has expired, or was never saved. It "
+    "has to be done again once -- the owner has been told, and after that "
+    "this works.)_"
+)
+
+
+def _plain_reason(message: str) -> str:
+    """A tool's error text, minus the instructions meant for the owner.
+
+    The tools are careful to name a fix ("Run: python dump_pages.py <link>"), and
+    that is right for the terminal. On Discord the reader cannot run anything on
+    the owner's machine, so the command is dropped and the reason kept -- the
+    part that tells them whether to try again.
+    """
+    text = " ".join((message or "").split())
+    for marker in ("Run: python", "run 'python", "run `python"):
+        head, sep, _tail = text.partition(marker)
+        if sep:
+            text = head.strip().rstrip(":.").strip()
+    return text
+
+
+# Above this age the sign-in is worth a warning. chess.com expires these, and an
+# expired one fails every review tool with a message about logging in -- which is
+# a confusing thing to be told by a bot, at the moment you asked for a picture.
+SIGN_IN_WARN_DAYS = 30
+
+
+def chess_com_sign_in_age() -> str:
+    """How old the saved chess.com session file is, or "" if there is none.
+
+    Deliberately the file's AGE and not a verdict. Nothing here can know whether
+    chess.com still accepts the cookie without a page load, and claiming
+    "expired" from a timestamp would be a plausible wrong value -- the exact
+    thing this project keeps designing against. So it states the age and lets
+    the reader connect it.
+    """
+    try:
+        path = session_state_path()
+        age_days = (time.time() - path.stat().st_mtime) / 86400
+    except OSError:
+        return ""
+    if age_days < SIGN_IN_WARN_DAYS:
+        return f"{age_days:.0f} days old"
+    return (
+        f"**{age_days:.0f} days old** -- chess.com expires these, so reviews "
+        f"may fail until the owner re-runs `python login_chess.py`"
+    )
+
+
+def picture_failure_note(errors: list) -> str:
+    """Why the picture did not arrive, in one line, from what the tools said.
+
+    The model is handed the same failure and writes prose about it, but it is
+    under no obligation to repeat the reason -- and when it does, it is a
+    paragraph, not something the user can act on. The tool's own words are the
+    honest source, and the front end is the only place that still has them.
+    """
+    for _tool, message in errors or []:
+        low = (message or "").lower()
+        if any(word in low for word in _EXPIRED_SESSION):
+            return _EXPIRED_NOTE
+    reasons = []
+    for _tool, message in errors or []:
+        reason = _plain_reason(message)
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    if not reasons:
+        return MISSING_SHOT_NOTE
+    return (
+        "_(No picture came through: "
+        + "; ".join(reasons[:2])
+        + ". Send me the game link and I will try again -- the owner has been "
+        "told.)_"
+    )
+
+
 # Minimal permission set for the invite link. ViewChannel 1024, SendMessages
 # 2048, EmbedLinks 16384, AttachFiles 32768, ReadMessageHistory 65536.
 BOT_PERMISSIONS = 1024 + 2048 + 16384 + 32768 + 65536
@@ -177,10 +322,8 @@ def help_text(commands_by_name: dict) -> str:
 
 _MENTION_STRIP = re.compile(r"<@!?\d+>")
 # A line that is NOTHING BUT a screenshot path, in any of the shapes a model
-# actually emits. The original only matched a Windows drive letter, so
-# `screenshots/summary.png` and `/home/.../summary.png` sailed straight through
-# into a channel -- the exact noise the platform note exists to stop, just in
-# a different font.
+# actually emits. The Discord platform note already tells it not to print paths,
+# and this catches the leftovers.
 #
 # Structure: a path, then an image extension, then end of line. Nothing else
 # may appear on the line, which is what keeps "It is saved at D:\photos\x.png if
@@ -240,13 +383,11 @@ def permitted(user: discord.abc.User) -> bool:
     """May this user make the bot run a tool?
 
     No, unless they are on the list. An empty list means NOBODY, in a DM just as
-    much as in a channel: this docstring used to claim that "DMs are allowed
-    through even when the list is empty", which was not true of the code, and
-    the code is the right way round -- the tools log into chess.com as the owner
-    and drive a real browser on the owner's machine, and a DM is not a smaller
-    risk than a channel, it is the same risk with fewer witnesses. `!status` and
-    the startup banner say what is configured, so an owner who has not set an
-    ID yet finds out at once.
+    much as in a channel: the tools log into chess.com as the owner and drive a
+    real browser on the owner's machine, and a DM is not a smaller risk than a
+    channel, it is the same risk with fewer witnesses. `!status` and the startup
+    banner say what is configured, so an owner who has not set an ID yet finds
+    out at once.
     """
     if OPEN_TO_EVERYONE:
         return True
@@ -277,10 +418,9 @@ def describe_artifact(path: Path) -> str:
         )
     if stem.startswith("summary"):
         return "review summary -- accuracy, full tally, coach commentary"
-    # `shot_<region>[_<label>]_<stamp>` -- take_screenshot. Without this branch
-    # every interactive frame was captioned "review screenshot", which is a lie:
-    # they are whatever the user asked to see, on a puzzle page or a lesson, and
-    # telling the user it is a review screenshot is worse than saying nothing.
+    # `shot_<region>[_<label>]_<stamp>` -- take_screenshot. These are whatever
+    # the user asked to see, on a puzzle page or a lesson, so they must not be
+    # captioned as a review screenshot.
     shot = re.match(r"shot_([a-z]+)(?:_(.+?))?_\d{8}_\d{6}$", stem)
     if shot:
         region = shot.group(1)
@@ -335,12 +475,12 @@ def chunk_message(text: str, limit: int | None = None) -> list[str]:
 
     Split on blank lines first so a table of games stays one item per line, then
     on newlines, and only hard-split a single line that is longer than the limit
-    on its own. A naive `text[:2000]` slices a table in half and drops the
-    second half's meaning, which is how a bot ends up listing six of nine games.
+    on its own. Not a naive `text[:2000]`: that slices a table in half and drops
+    the second half's meaning, which is how a bot ends up listing six of nine
+    games.
 
-    `limit` defaults to `MAX_MESSAGE_CHARS` at CALL time, not at def time: as a
-    default argument it was frozen when the module loaded, so the constant could
-    not be tuned and no test could exercise the multi-chunk path without
+    `limit` defaults to `MAX_MESSAGE_CHARS` at CALL time, not at def time, so
+    the constant stays tunable and the multi-chunk path is testable without
     building a 2000-character string.
     """
     limit = MAX_MESSAGE_CHARS if limit is None else limit
@@ -425,10 +565,6 @@ def _spawn(coro, loop: asyncio.AbstractEventLoop, where: str):
     retrieved" warning on stderr and no log line of our own. Both failure modes
     are handled here so a status-line problem can never be mistaken for a
     broken turn.
-
-    Used to be called straight from the `on_tool` callback with a bare
-    `.result()`-less fire-and-forget, which is what let a closing loop turn a
-    progress update into a failed answer.
     """
     try:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -464,9 +600,8 @@ class _BrowserGate(agent.ToolGate):
     call rather than a lock around the turn.
 
     While it waits it says so, and afterwards it reports the real elapsed
-    time. The user used to be told "queued behind the browser" by a check made
-    once, at the start of the turn, which was wrong whenever the queue formed
-    later and stayed quiet whenever it did not.
+    time, so the queue position is taken when the queue actually forms rather
+    than guessed at the start of the turn.
     """
 
     def __init__(
@@ -491,11 +626,11 @@ class _BrowserGate(agent.ToolGate):
     async def _queue(self, content: str, urgent: bool = False) -> None:
         """Take the newest progress line and write it, rate-limited.
 
-        Coalescing, not queueing. Two things were wrong with posting every line
-        as it arrived: Discord allows about 5 edits per 5s per channel and a
-        six-round turn outruns that, and a burst of updates that each waited
-        their own turn came out in an arbitrary order -- so the status line
-        could end on `get_recent_games - 3s` after `get_moves - 12s`.
+        Coalescing, not queueing. Discord allows about 5 edits per 5s per
+        channel and a six-round turn outruns that, and a burst of updates that
+        each waited their own turn would come out in an arbitrary order -- so
+        the status line could end on "looking up recent games · 3s" after
+        "reading the move list · 12s".
 
         Keeping only the newest line fixes both. A progress line is a snapshot
         of "what is happening now", so the ones it replaces carry no
@@ -536,9 +671,18 @@ class _BrowserGate(agent.ToolGate):
         _spawn(self._queue(content, urgent=True), self._loop, "status edit")
 
     def _describe(self, name: str, args: dict) -> str:
-        shown = ", ".join(f"{k}={str(v)[:60]}" for k, v in list(args.items())[:2])
-        where = f"`{name}`" + (f" {shown}" if shown else "")
-        return f"_running {where}_ \u00b7 {self._loop.time() - self._started:.0f}s"
+        """The line shown while `name` runs. Never the tool name, by default.
+
+        `args` is only used by the opt-in technical mode, and is truncated
+        there: a game URL is long, a whole argument dump is not something to
+        put in front of a user who asked a question about chess.
+        """
+        if SHOW_TOOL_NAMES:
+            shown = ", ".join(f"{k}={str(v)[:60]}" for k, v in list(args.items())[:2])
+            where = f"`{name}`" + (f" {shown}" if shown else "")
+            return f"_running {where}_ \u00b7 {self._loop.time() - self._started:.0f}s"
+        what = TOOL_PROGRESS.get(name, DEFAULT_PROGRESS)
+        return f"_{what.capitalize()}\u2026 \u00b7 {self._loop.time() - self._started:.0f}s_"
 
     # -- the gate ----------------------------------------------------------
 
@@ -549,9 +693,11 @@ class _BrowserGate(agent.ToolGate):
         if lock.locked():
             self._bot._queued += 1
             try:
+                # No tool name here either, for the same reason as in
+                # `_describe`: this line goes into the user's channel.
                 self._show(
-                    f"_Queued: someone else is using the browser "
-                    f"(`{name}`). You are number {self._bot._queued} in line._"
+                    "_Queued: someone else is using the browser for now. "
+                    f"You are number {self._bot._queued} in line._"
                 )
                 # Blocking here is the point: this worker thread has nothing
                 # else to do, and the event loop is free meanwhile.
@@ -607,9 +753,8 @@ class ChessBot(commands.Bot):
         self._session_seen: dict[tuple, float] = {}
         # One lock per session. An `AgentSession` owns a Gemini chat and is not
         # thread-safe, so two messages from one person must not run at once --
-        # and now that the browser lock is per tool call, this is the only thing
-        # serialising a given conversation. Previously the global lock did it by
-        # accident, by serialising everybody.
+        # and since the browser lock is taken per tool call, this is the only
+        # thing serialising a given conversation.
         self._session_locks: dict[tuple, asyncio.Lock] = {}
         # The tools share one browser profile and one chess.com session file.
         self._browser_lock = asyncio.Lock()
@@ -640,9 +785,7 @@ class ChessBot(commands.Bot):
     async def setup_hook(self) -> None:
         # The `@commands.command()` decorator is what makes these `Command`
         # objects. Without it they are plain coroutine methods, and
-        # `add_command` raises `TypeError: The command passed must be a subclass
-        # of Command` before the bot ever connects -- which is exactly what
-        # happened on the first run.
+        # `add_command` raises `TypeError` before the bot ever connects.
         #
         # `add_command` is a plain synchronous method, NOT a coroutine, so there
         # is no `await` on it. `process_commands` a few lines down IS async.
@@ -677,12 +820,12 @@ class ChessBot(commands.Bot):
     def session_for(self, key: tuple) -> agent.AgentSession:
         """The conversation for this (guild, channel, user), creating it if new.
 
-        Raises `agent.MissingSetting` if the API key is unusable. The old
-        version called `agent.get_api_key()`, which *exits the process* -- and
-        this runs from inside a coroutine on the event loop, where a
-        `SystemExit` is a `BaseException` no `except Exception` catches. A key
-        that went bad between startup and the first message would have taken the
-        whole bot down instead of posting a sentence about `.env`.
+        Raises `agent.MissingSetting` if the API key is unusable. The key is
+        read here, from inside a coroutine on the event loop, so it has to be
+        `require_api_key` (which raises) and not the exiting kind: a
+        `SystemExit` there is a `BaseException` no `except Exception` catches,
+        and a key that goes bad between startup and the first message would
+        take the whole bot down instead of posting a sentence about `.env`.
         """
         if self._client is None:
             self._client = genai.Client(api_key=agent.require_api_key())
@@ -785,6 +928,9 @@ class ChessBot(commands.Bot):
             if TURN_TIMEOUT_SECONDS
             else "turn limit: none",
         ]
+        sign_in = chess_com_sign_in_age()
+        if sign_in:
+            lines.append(f"chess.com sign-in file: {sign_in}")
         if self._stalled:
             # Worth surfacing: a wedged tool is invisible otherwise, and the
             # owner needs to know a Chromium is still running.
@@ -808,8 +954,7 @@ class ChessBot(commands.Bot):
         """Say something when a command does not work.
 
         With no handler, discord.py logs the traceback and the user sees
-        nothing at all -- so `!statuss` or `!help me` was a silent no-op, which
-        reads as a broken bot rather than a typo.
+        nothing at all, so `!statuss` reads as a broken bot rather than a typo.
         """
         if isinstance(error, commands.CommandInvokeError):
             # The command itself raised; it is responsible for its own message.
@@ -850,7 +995,7 @@ class ChessBot(commands.Bot):
             return
 
         # Prefix commands first, and FIRST because this override replaces
-        # `commands.Bot.on_message`, which is the method that normally calls
+        # `commands.Bot.on_message`, the method that normally calls
         # `process_commands`. Without this line `!reset` and `!status` would be
         # registered, documented, and silently never fire. They work anywhere,
         # no mention needed.
@@ -881,8 +1026,8 @@ class ChessBot(commands.Bot):
         try:
             session = self.session_for(key)
         except agent.MissingSetting as exc:
-            # The key went bad after startup. `require_api_key` raises where
-            # `get_api_key` used to exit, so this is a message and not a corpse.
+            # The key went bad after startup. `require_api_key` raises rather
+            # than exiting, so this is a message and not a dead process.
             _LOG.error("%s is unusable: %s", exc.name, exc.detail)
             await message.reply(
                 f"I cannot start: {exc.detail}",
@@ -1041,6 +1186,17 @@ class ChessBot(commands.Bot):
 
     async def _post(self, status: discord.Message, result: agent.AgentResult) -> None:
         body = strip_path_lines(result.text) or "_(the model returned nothing)_"
+        # A screenshot tool ran and nothing came back. Say so, and say WHY: the
+        # alternative is a paragraph of confident text and silence where the
+        # image should be, which is the complaint, not the fix.
+        if not result.artifacts and SHOT_TOOLS.intersection(result.tools_used):
+            note = picture_failure_note(result.tool_errors)
+            _LOG.warning(
+                "a screenshot tool ran and produced no picture (%s): %s",
+                ", ".join(result.tools_used),
+                result.tool_errors or "no reason reported",
+            )
+            body = f"{body}\n\n{note}"
         chunks = chunk_message(body) or ["_(the model returned nothing)_"]
 
         # Reuse the placeholder for the first chunk so the channel does not
@@ -1050,10 +1206,10 @@ class ChessBot(commands.Bot):
             rest = chunks[1:]
         else:
             rest = chunks
-        # Every send is guarded. This used to be one unguarded `await` per
-        # chunk, so a single rate limit or 413 threw out of `_post`, out of
-        # `_answer`, and into discord.py's default handler -- and the user lost
-        # the rest of the answer having been told nothing.
+        # Every send is guarded, so one rate limit or 413 costs a chunk rather
+        # than throwing out of `_post`, out of `_answer`, and into discord.py's
+        # default handler -- the user would lose the rest of the answer having
+        # been told nothing.
         for extra in rest:
             if not await self._send(status, extra):
                 _LOG.warning("could not post a chunk of the answer")
@@ -1078,9 +1234,20 @@ class ChessBot(commands.Bot):
         return False
 
     async def _attach(self, status: discord.Message, artifacts: list) -> None:
-        """Post the screenshots, batched by file count AND by size."""
+        """Post the screenshots, batched by file count AND by size.
+
+        Two different things can cost the user a picture, and both are said out
+        loud rather than logged: a frame the byte budget refuses outright, and a
+        batch Discord rejects. A review that silently loses its blunder frame is
+        exactly the failure this project keeps designing against.
+        """
+        # Batched first, so what the budget refused can be counted before any
+        # send: `_upload_batches` is a generator, and a count taken afterwards
+        # would conflate "too big to post" with "the upload failed".
+        batches = list(_upload_batches(artifacts))
+        refused = len(artifacts) - sum(len(batch) for batch in batches)
         posted = 0
-        for batch in _upload_batches(artifacts):
+        for batch in batches:
             paths = [path for _tool, path in batch]
             caption = "\n".join(f"- {describe_artifact(path)}" for path in paths)
             try:
@@ -1105,6 +1272,18 @@ class ChessBot(commands.Bot):
                     f"_Could not attach {len(paths)} screenshot(s): {e}. The "
                     f"answer above still stands._",
                 )
+        if refused:
+            _LOG.warning(
+                "%d screenshot(s) were over the per-file size limit and were "
+                "never offered to Discord",
+                refused,
+            )
+            await self._send(
+                status,
+                f"_{refused} of the {len(artifacts)} screenshot(s) were too large "
+                f"for this channel and were left out. Lower REVIEW_VIEWPORT_W to "
+                f"get smaller pictures._",
+            )
         skipped = len(artifacts) - posted
         if skipped:
             _LOG.warning("%d artifact(s) never made it to Discord", skipped)
@@ -1123,11 +1302,13 @@ def _upload_batches(artifacts: list, size: int | None = None):
     The count limit alone is not enough. Ten board crops at the default viewport
     measured ~620KB each, which is ~6MB against Discord's 8MB ceiling for a
     server with no boost -- and `REVIEW_VIEWPORT_W` can push a frame well past
-    that. One oversized file was enough to have the whole batch refused with a
-    413, and because nothing caught it, every later batch went with it.
+    that, which gets the whole batch refused with a 413.
 
     A file over `MAX_ATTACHMENT_BYTES` on its own is dropped with a log line
     rather than posted, so it cannot fail its own batch and every batch after.
+    `_attach` counts what came back and tells the user how many were left out,
+    because a frame the budget refused never reaches Discord and so produces no
+    HTTP error to report -- it would just be a picture that never arrives.
     Files are stat'ed once here rather than by `discord.File`, which would
     otherwise re-read each one on every retry.
     """

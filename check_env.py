@@ -3,14 +3,14 @@
     python check_env.py          # human report, exit 1 if required keys missing
     python check_env.py --quiet  # exit code only, for a pre-commit hook or CI
 
-This exists because "Missing DISCORD_BOT_TOKEN" is a bad error message. It does
-not say which file was read, whether the file exists, whether the value is a
-real token or the `your_bot_token_here` placeholder from the template, or which
-other settings are missing. So the fix is always the same guess: open the
-project, find the .env, wonder whether the one you edited is the one being read.
+"Missing DISCORD_BOT_TOKEN" is a bad error message: it does not say which file
+was read, whether the value is a real token or the template placeholder, or
+which other settings are missing. So the fix is always the same guess -- open
+the project, find the .env, wonder whether the one you edited is the one being
+read.
 
-Every value is redacted. These are tokens and API keys, and the whole reason
-this report is safe to paste into a chat is that it cannot print one.
+Every value is redacted. The whole reason this report is safe to paste into a
+chat is that it cannot print one.
 """
 
 import sys
@@ -44,9 +44,9 @@ def report() -> int:
             print(f"  absent   {path}")
     print(f"\n  {project_env.describe_sources()}")
 
-    # 2. Where each setting actually came from. This is the part that answers
-    #    "did I even save it?" -- the process environment beats every file, so a
-    #    stale exported variable silently wins over the .env you just edited.
+    # 2. Where each setting actually came from. The process environment beats
+    #    every file, so a stale exported variable silently wins over the .env
+    #    you just edited.
     print("\nRESOLVED (the value the program will actually use)")
     required = ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USER_IDS")
     optional = [k for k in project_env.documented_keys() if k not in required]
@@ -55,8 +55,7 @@ def report() -> int:
         tag = "required" if name in required else "optional"
         print(f"  {_state_icon(state):5} {name:28} {state:11} ({tag})")
 
-    # 3. Settings the template documents but the .env omits. A hand-written .env
-    #    normally has two of the fifteen; this is the list you were missing.
+    # 3. Settings the template documents but the .env omits.
     env_keys = set(project_env.parse_env_file(project_env.PROJECT_ENV))
     parent_keys = set(project_env.parse_env_file(project_env.parent_env_path()))
     documented = set(project_env.documented_keys())
