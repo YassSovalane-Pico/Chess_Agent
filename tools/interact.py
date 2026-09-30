@@ -427,9 +427,7 @@ def goto_move_in_game(ply: int = 0, move_number: int = 0, color: str = "") -> di
         return _error(f"Could not go to that move: {exc}")
     result["engine_eval"] = engine.get("engine_eval")
     if result.get("already_at"):
-        result["note"] = (
-            "The board was already on that move, so nothing had to change."
-        )
+        result["note"] = "The board was already on that move, so nothing had to change."
     elif not result.get("moved"):
         result["note"] = (
             "The board would not move to that position. Say so rather than "

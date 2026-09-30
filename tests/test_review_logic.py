@@ -1047,7 +1047,9 @@ class _FakeLoc:
 class _FakeBoardPage:
     """A page whose board signature is a scripted sequence of probe results."""
 
-    def __init__(self, probes=(), visible=(), active=None, labels=None, active_ply=None):
+    def __init__(
+        self, probes=(), visible=(), active=None, labels=None, active_ply=None
+    ):
         self.probes = list(probes)
         self.visible = set(visible)
         # `active` is the OLD text-counting answer. Kept so a test can assert
@@ -1329,6 +1331,26 @@ AGENT_TOOLS = (
     "get_moves",
     "get_coach_commentary",
     "screenshot_game_move",
+    # The interactive browser tools. Every one of these opens the same
+    # long-lived session, so each is called with a bare URL or no argument.
+    "open_chess_page",
+    "where_am_i",
+    "move_board",
+    "goto_move_in_game",
+    "take_screenshot",
+    "close_browser_session",
+)
+
+# Tools that take a game link as their single positional argument, so the
+# contract test can call them with one. The interactive tools do not: they act
+# on a URL or on nothing at all, and `close_browser_session` takes no
+# arguments, so calling every tool the same way is not possible.
+ONE_URL_ARG_TOOLS = (
+    "review_game_screenshots",
+    "get_review_state",
+    "get_moves",
+    "get_coach_commentary",
+    "screenshot_game_move",
 )
 
 
@@ -1357,16 +1379,43 @@ def test_every_agent_tool_is_synchronous_and_json_safe():
     # this checks the SHAPE of what a failed tool returns, which is all the
     # agent contract needs and costs nothing.
     os.environ["CHESS_AGENT_STATE"] = str(ROOT_FOR_TESTS / "no_such_session.json")
+    url = "https://www.chess.com/game/live/184571437220"
     try:
-        for name in AGENT_TOOLS[2:]:
-            result = main.FUNCTION_MAP[name](
-                "https://www.chess.com/game/live/184571437220"
-            )
+        for name in ONE_URL_ARG_TOOLS:
+            result = main.FUNCTION_MAP[name](url)
             assert isinstance(result, dict), (name, type(result))
             json.dumps({"result": result})  # the call the agent loop makes
             assert "error" in result, (name, result)
+
+        # The interactive tools, each called the way the model would call it.
+        # Every one must fail as a MESSAGE with no session file, never as an
+        # exception and never as a coroutine.
+        calls = {
+            "open_chess_page": lambda: main.FUNCTION_MAP["open_chess_page"](url),
+            "where_am_i": lambda: main.FUNCTION_MAP["where_am_i"](),
+            "move_board": lambda: main.FUNCTION_MAP["move_board"](
+                direction="next", plies=1
+            ),
+            "goto_move_in_game": lambda: main.FUNCTION_MAP["goto_move_in_game"](ply=3),
+            "take_screenshot": lambda: main.FUNCTION_MAP["take_screenshot"](),
+            "close_browser_session": main.FUNCTION_MAP["close_browser_session"],
+        }
+        for name, call in calls.items():
+            result = call()
+            assert isinstance(result, dict), (name, type(result))
+            json.dumps({"result": result})  # the call the agent loop makes
+            # `where_am_i` and `close_browser_session` legitimately succeed with
+            # nothing open -- there is nothing to log in to and nothing to
+            # close -- so they only have to be a serialisable dict.
+            if name not in ("where_am_i", "close_browser_session"):
+                assert "error" in result, (name, result)
     finally:
         del os.environ["CHESS_AGENT_STATE"]
+        # The interactive tools share a process-wide session; make sure one
+        # test's browser cannot leak into the next.
+        from tools.session import close_session
+
+        close_session()
 
 
 def test_each_review_tool_documents_its_own_shape():

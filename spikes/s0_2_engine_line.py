@@ -35,7 +35,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from tools.common import configure_logging, load_browser_profile, session_state_path  # noqa: E402
+from tools.common import (  # noqa: E402
+    configure_logging,
+    load_browser_profile,
+    session_state_path,
+)
 from tools.review import _build_review_url  # noqa: E402
 
 NAV_TIMEOUT = 45000
@@ -130,25 +134,39 @@ _SIDEBAR_JS = r"""
 
 
 async def _open(p, state_path, profile, headed):
-    kwargs = {"storage_state": str(state_path), "viewport": {"width": 1400, "height": 820}}
+    kwargs = {
+        "storage_state": str(state_path),
+        "viewport": {"width": 1400, "height": 820},
+    }
     if profile.get("user_agent"):
         kwargs["user_agent"] = profile["user_agent"]
     try:
         browser = await p.chromium.launch(
-            channel="chrome", headless=not headed,
-            args=["--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage", "--no-sandbox"],
+            channel="chrome",
+            headless=not headed,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
             ignore_default_args=["--enable-automation"],
         )
     except Exception:  # noqa: BLE001
         browser = await p.chromium.launch(
             headless=not headed,
-            args=["--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage", "--no-sandbox"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
             ignore_default_args=["--enable-automation"],
         )
     context = await browser.new_context(**kwargs)
     page = await context.new_page()
     try:
-        await page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        await page.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+        )
     except Exception:  # noqa: BLE001
         pass
     return browser, context, page
@@ -173,7 +191,9 @@ async def probe_board(page, url: str, name: str, out_dir: Path, settle_ms: int) 
     eval_probe = await page.evaluate(_PROBE_JS, EVAL_SELECTORS)
     engine_probe = await page.evaluate(_PROBE_JS, ENGINE_SELECTORS)
     sidebar = await page.evaluate(_SIDEBAR_JS)
-    body_text = await page.evaluate("() => (document.body.innerText||'').slice(0, 4000)")
+    body_text = await page.evaluate(
+        "() => (document.body.innerText||'').slice(0, 4000)"
+    )
 
     report = {
         "url": page.url,
@@ -184,7 +204,9 @@ async def probe_board(page, url: str, name: str, out_dir: Path, settle_ms: int) 
         "sidebar_html": sidebar,
         "body_text": body_text,
     }
-    (out_dir / f"{name}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (out_dir / f"{name}.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
     (out_dir / f"{name}.txt").write_text(body_text, encoding="utf-8")
 
     # Quick verdict for the console.
@@ -203,8 +225,21 @@ def score(report: dict) -> tuple[bool, str]:
     engine_hits = {k for k, v in report["engine_selectors"].items() if v["count"] > 0}
     text = (report.get("body_text") or "").lower()
     # A numeric eval like "+0.35" or "-1.07", or engine words, in the text.
-    has_eval_text = any(ch.isdigit() for ch in text) and ("eval" in text or "+" in text or "-" in text)
-    line_words = any(w in text for w in ("variation", "principal", "line", "stockfish", "depth", "knps", "nodes"))
+    has_eval_text = any(ch.isdigit() for ch in text) and (
+        "eval" in text or "+" in text or "-" in text
+    )
+    line_words = any(
+        w in text
+        for w in (
+            "variation",
+            "principal",
+            "line",
+            "stockfish",
+            "depth",
+            "knps",
+            "nodes",
+        )
+    )
     found_eval = bool(eval_hits) or has_eval_text
     found_line = bool(engine_hits) or line_words
     verdict = (
@@ -223,7 +258,9 @@ async def run(game_url: str, out_dir: Path, headed: bool, settle_ms: int) -> int
         return 2
     profile = load_browser_profile()
     if not profile.get("user_agent"):
-        print("NOTE: no recorded user agent; re-run login_chess.py for a matched fingerprint.\n")
+        print(
+            "NOTE: no recorded user agent; re-run login_chess.py for a matched fingerprint.\n"
+        )
 
     _, game_id, _ = _build_review_url(game_url)
     kind = "live" if "/live/" in game_url else "daily"
@@ -238,9 +275,13 @@ async def run(game_url: str, out_dir: Path, headed: bool, settle_ms: int) -> int
         browser = context = page = None
         try:
             browser, context, page = await _open(p, state_path, profile, headed)
-            results["analysis_game"] = await probe_board(page, analysis_game, "analysis_game", out_dir, settle_ms)
+            results["analysis_game"] = await probe_board(
+                page, analysis_game, "analysis_game", out_dir, settle_ms
+            )
             # Let the page settle before the second board.
-            results["analysis_blank"] = await probe_board(page, analysis_blank, "analysis_blank", out_dir, settle_ms)
+            results["analysis_blank"] = await probe_board(
+                page, analysis_blank, "analysis_blank", out_dir, settle_ms
+            )
         finally:
             for obj, name in ((context, "context"), (browser, "browser")):
                 if obj is not None:
@@ -274,11 +315,17 @@ async def run(game_url: str, out_dir: Path, headed: bool, settle_ms: int) -> int
 
 def main() -> int:
     configure_logging("info")
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("game_url", nargs="?", default="https://www.chess.com/game/live/184571437220")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "game_url", nargs="?", default="https://www.chess.com/game/live/184571437220"
+    )
     ap.add_argument("--out", default=str(ROOT / "spikes" / "s0_2"))
     ap.add_argument("--headed", action="store_true")
-    ap.add_argument("--settle", type=int, default=9000, help="ms to let the engine compute")
+    ap.add_argument(
+        "--settle", type=int, default=9000, help="ms to let the engine compute"
+    )
     args = ap.parse_args()
     if args.headed:
         os.environ["REVIEW_HEADLESS"] = "0"

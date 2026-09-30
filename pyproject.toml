@@ -49,6 +49,13 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # Tests assert; that is what they are for.
 "tests/*" = ["S101"]
+# Spikes are measurements, not product code. They are the evidence behind
+# tools/session.py and tools/interact.py and they ship in the repo, but they
+# are deliberately scrappy: a spike that would not fit inside a module is the
+# point of one. S110 in particular fires on every `except: pass` in a cleanup
+# path, which in a spike is exactly right -- a failed teardown must not stop
+# the next measurement.
+"spikes/*" = ["S101", "S110", "F401", "F841", "RUF059"]
 # The Gemini system instruction is one multi-line string, so a noqa cannot be
 # placed on the offending line without editing the prompt itself. The
 # heavy-minus sign is deliberate: it is the draw icon, chosen because a plain

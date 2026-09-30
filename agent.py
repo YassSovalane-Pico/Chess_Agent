@@ -57,6 +57,7 @@ from tools import (
     review_game_screenshots,
     screenshot_game_move,
 )
+from tools.interact import INTERACTIVE_TOOLS
 
 _LOG = logging.getLogger(__name__)
 
@@ -87,7 +88,12 @@ MODEL_FALLBACK_HINT = "gemini-3.8-flash"
 # `while response.function_calls:` with no bound, so a model that keeps
 # re-requesting a tool would loop forever and keep spending tokens. Most turns
 # need 0 or 1 rounds.
-MAX_TOOL_ROUNDS = 6
+# Six was right when every browser tool was one-shot. An interactive request is
+# a SEQUENCE -- open the page, step three moves, photograph, read the engine --
+# which is eight or more rounds before it has said anything, and a turn cut off
+# mid-sequence is worse than a slow one: the user is left with "stopped without
+# a final answer" and a browser part-way through their game.
+MAX_TOOL_ROUNDS = int(os.getenv("AGENT_MAX_TOOL_ROUNDS", "12"))
 
 # How many user turns one conversation keeps before it is started over. Gemini's
 # chat history cannot be truncated in place, and a chat that grows forever
@@ -136,6 +142,48 @@ You are a helpful chess assistant.
   Never guess, and never retry with a different move number.
 - There is NO chess.com API for a friends list. If the user asks for friends,
   explain this and show the followers count from get_player_profile instead.
+- You can also DRIVE the browser instead of only reading a review. The
+  interactive tools keep one chess.com page open between calls, so a
+  conversation can be a sequence rather than a single lookup:
+
+    open_chess_page   go to a board, review, lesson, puzzle or opening page.
+                      The page STAYS open afterwards.
+    where_am_i        what is on screen right now (cheap; does not open a
+                      browser on its own)
+    move_board        step forward or back through the moves, "verified"
+                      confirming the board really changed
+    goto_move_in_game jump straight to one move: by ply, or by move number
+                      plus colour
+    take_screenshot   photograph what is on screen: auto (board + panel),
+                      board, sidebar or viewport
+    close_browser_session   shut the browser down
+
+  When to use which, because this is the decision the model gets wrong:
+    * ONE review, all at once, no follow-up questions  -> review_game_screenshots
+      / get_review_state / get_moves / get_coach_commentary. They are faster and
+      self-contained, and they do not leave a browser running.
+    * "go to", "show me", "then", "what's next", "step back", anything the user
+      wants to SEE or WALK THROUGH  -> the interactive tools, in order: open the
+      page first, then act on it.
+  Do not use the interactive tools for a plain "how accurate was I" -- the
+  one-shot tools answer that without keeping a browser alive.
+- The interactive tools refuse to open settings, logout, friends or messages.
+  That is deliberate: they run on a real logged-in account. If the user asks
+  for those, say the agent cannot open them rather than trying again.
+- HONESTY for the interactive tools:
+    * move_board returns `verified`. If it is false the board did NOT move --
+      read `reason` and say so. Never report a step you could not confirm.
+    * goto_move_in_game returns `moved` AND `already_at`. `already_at` true
+      means the board was already on that move, which is a success, not a
+      failure. If `moved` is false and `already_at` is false, it could not get
+      there.
+    * `engine_eval` is chess.com's evaluation for the position on the board,
+      e.g. "-0.61". Positive is good for White, negative for Black. chess.com
+      does NOT expose a multi-move engine line in the page, so never invent one:
+      if asked what line the engine suggests, give the evaluation and say the
+      site does not show a line here.
+    * where_am_i with session_open false means nothing is open. Say so; do not
+      describe a page you have not looked at.
 - Use review_game_screenshots when the user gives a game link and asks for
   game review / brilliant / blunder / screenshots. It returns white_accuracy,
   black_accuracy, move_counts, notable_moves, moves_read, highlight,
@@ -235,6 +283,7 @@ TOOLS = [
     get_moves,
     get_coach_commentary,
     screenshot_game_move,
+    *INTERACTIVE_TOOLS,
 ]
 # Derived from the list, so a tool can never be registered under a name the
 # model cannot call.
@@ -255,6 +304,18 @@ BROWSER_TOOLS = frozenset(
         "get_moves",
         "get_review_state",
         "get_coach_commentary",
+        # The interactive tools. Each one drives the shared browser session, so
+        # each takes the gate -- but note what the gate does and does not now
+        # cover. It serialises the CALL, so no interactive operation ever runs
+        # beside a review. It does not hold across calls: the session's browser
+        # deliberately outlives the gate, which is the whole point, and the
+        # session serialises its own operations internally instead.
+        "open_chess_page",
+        "where_am_i",
+        "move_board",
+        "goto_move_in_game",
+        "take_screenshot",
+        "close_browser_session",
     }
 )
 
@@ -279,11 +340,12 @@ MAX_ARTIFACTS = 20
 # in a dozen messages. This is the per-turn ceiling that actually does, and
 # `run_agent` stops collecting once it is reached.
 #
-# 40 is two Discord messages' worth at the 10-file limit, which covers a game
-# with a summary frame plus a dozen brilliant and blunder frames -- the real
-# worst case for the review pipeline -- without letting a runaway tool turn
-# into a spam flood.
-MAX_ARTIFACTS_PER_TURN = 40
+# 40 was two Discord messages' worth at the 10-file limit, sized for one
+# review. An interactive turn can ask for a frame per position, and the user's
+# own session is unbounded, so it is raised. The byte budget in discord_bot is
+# what actually stops a flood -- it batches uploads by size as well as count --
+# and that is the honest limit to lean on.
+MAX_ARTIFACTS_PER_TURN = int(os.getenv("AGENT_MAX_ARTIFACTS", "80"))
 
 
 class AgentTurnFailed(Exception):
@@ -451,6 +513,12 @@ def collect_artifacts(
     Non-existent paths are dropped rather than reported: a tool that failed
     halfway may name a file it never wrote, and posting it would be a 404 in a
     channel.
+
+    Dropping is only safe while the tool is honest about what it wrote.
+    `take_screenshot` therefore returns the path it actually wrote rather than
+    one it intends to, and this function verifies the file exists -- so a tool
+    that names a missing file loses the picture here instead of raising at the
+    front end.
 
     `seen` is the caller's set of paths already collected this TURN, so the
     same frame reached by two different tool calls is attached once. Passing

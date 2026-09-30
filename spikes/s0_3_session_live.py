@@ -32,7 +32,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tools.common import configure_logging, session_state_path  # noqa: E402
-from tools.review import _build_review_url, content_clip, screenshot_review_area  # noqa: E402
+from tools.review import (  # noqa: E402
+    _build_review_url,
+    content_clip,
+    screenshot_review_area,
+)
 from tools.session import BrowserSession, SessionClosed, url_allowed  # noqa: E402
 
 GAME = "https://www.chess.com/game/live/184571437220"
@@ -101,14 +105,15 @@ def main() -> int:
         path = shots / f"session_live_{game_id}.png"
         session.submit(lambda: _shoot(path))
         exists = path.exists() and path.stat().st_size > 0
-        print(f"    {path.name}: exists={exists} "
-              f"bytes={path.stat().st_size if exists else 0}")
+        print(
+            f"    {path.name}: exists={exists} "
+            f"bytes={path.stat().st_size if exists else 0}"
+        )
         if not exists:
             problems.append("no screenshot written")
 
         _step(8, "the allow-list refuses an off-limits page")
-        for bad in ("https://www.chess.com/settings",
-                    "https://www.chess.com/logout"):
+        for bad in ("https://www.chess.com/settings", "https://www.chess.com/logout"):
             try:
                 session.navigate(bad)
                 print(f"    {bad}: NOT REFUSED  <-- problem")

@@ -18,10 +18,16 @@ user message → model decides to call a tool → tool runs (HTTP to chess.com)
   - `profiles.py` — `get_player_profile`
   - `move_list.py` — the move table (`data-node` plies), the classification
     vocabulary, the summary/coach panels, navigation
-  - `review.py` — the seven review tools: `review_game_screenshots`,
+  - `review.py` — the five one-shot review tools: `review_game_screenshots`,
     `screenshot_game_move`, `get_review_state`, `get_moves`,
-    `get_coach_commentary` (all via one logged-in browser session)
+    `get_coach_commentary`. Each opens its own browser and closes it.
+  - `session.py` — one **long-lived** logged-in browser, shared by every tool
+  - `interact.py` — the interactive tools that drive that session: open a page,
+    step through moves, screenshot what is on screen, close it
   - `common.py` — shared constants/helpers + logging + browser fingerprint
+- `spikes/` — the measurements the session's design rests on, and the live
+  checks that exercise it. `s0_1` proves why the session needs its own event
+  loop; `s0_3` and `s0_4` drive the real tools against chess.com.
 - `agent.py` — the agent itself: the system instruction, the tool list, the
   loop, screenshot collection, and one conversation's worth of Gemini chat.
 - `main.py` — terminal front end over `agent.py`.
@@ -227,6 +233,101 @@ misreport them.
 restarting the bot. `python check_env.py` shows every setting and where it came
 from.
 
+## Driving the browser (interactive mode) — needs a login
+
+The five review tools above each open a browser, do one thing, and close it.
+That is right for *"how accurate was I"* and useless for *"go forward three
+moves, show me that, then back one"*, because each of those is a separate
+question about the same page.
+
+So there is also **one long-lived browser** that stays open between tool calls.
+Six tools drive it:
+
+| Tool | What it does |
+|---|---|
+| `open_chess_page(url)` | Go to a board, review, lesson, puzzle or opening page. The page **stays open**. Returns the review summary too, captured before the review starts. |
+| `where_am_i()` | What is on screen right now. Cheap, and does **not** open a browser on its own. |
+| `move_board(direction, plies)` | Step forward or back. Returns `verified` — false means the board did not actually move. |
+| `goto_move_in_game(ply \| move_number+color)` | Jump straight to one move. Refuses an ambiguous move number rather than guessing. |
+| `take_screenshot(region)` | Photograph what is on screen: `auto` (board + panel), `board`, `sidebar`, `viewport`. |
+| `close_browser_session()` | Shut the browser down. Optional — it closes itself after `SESSION_IDLE_SECONDS`. |
+
+A conversation, in order:
+
+```
+@ChessAgent open the review of https://www.chess.com/game/live/184571437220
+@ChessAgent go forward 3 moves
+@ChessAgent what does the engine think of this position?
+@ChessAgent screenshot that
+@ChessAgent step back two
+@ChessAgent close the browser
+```
+
+### Which half should the agent use?
+
+The system prompt teaches the model this split, and it matters:
+
+- **One review, all at once** → the review tools. Faster, self-contained, and
+  they leave no browser running.
+- **"go to", "show me", "then", "step back"** → the interactive tools, in order:
+  open the page first, then act on it.
+
+### What it will not open
+
+Navigation is fenced to the **analysis board, game reviews, game pages,
+lessons, puzzles and the opening explorer**. Settings, logout, friends and
+messages are refused by name.
+
+This is deliberate and it is the price of giving the agent a browser. The tools
+run on a real logged-in chess.com account — `storage_state.json` holds a live
+`ACCESS_TOKEN` — so "go wherever you like" has to mean "go wherever you like
+*on the board*". The URL is checked before a navigation **and again on the
+page's final URL**, because chess.com is a single-page app that can redirect
+client-side after `goto` returns.
+
+### Two things the design had to be measured, not assumed
+
+`spikes/s0_1_loop_affinity.py` exists because the obvious way to build a
+long-lived session does not work, and both reasons are non-obvious:
+
+1. **A Playwright page is bound to the event loop that created it.** The
+   one-shot tools use `asyncio.run`, so each gets a fresh loop. A page that
+   outlives one call raises
+   `Page.evaluate: 'NoneType' object has no attribute 'send'`. So the session
+   owns **one private event loop on one dedicated thread**, and every operation
+   goes through `run_coroutine_threadsafe`.
+2. **Concurrent operations on one page destroy each other.** A `page.goto`
+   tears down the execution context a concurrent `page.evaluate` was about to
+   use: *"Execution context was destroyed, most likely because of a
+   navigation"*. So every operation is serialised under a lock. The spike
+   measures this deliberately, by racing a `goto` against an `evaluate`.
+
+Run it any time — it is the evidence for the whole design:
+
+```bash
+python spikes/s0_1_loop_affinity.py   # prints three VERDICT lines
+python spikes/s0_3_session_live.py    # drives the session against chess.com
+python spikes/s0_4_interactive_flow.py  # drives the six tools, 12 checks
+```
+
+### On the engine
+
+`where_am_i` and the navigation tools report chess.com's **evaluation** for the
+position on the board (`engine_eval`, e.g. `-0.61`; positive favours White).
+chess.com does **not** put a multi-move line in the page — `spikes/s0_2` found
+no `stockfish`, `depth`, `variation` or PV markup on either the game board or
+the blank analysis board — so the system prompt tells the model never to invent
+one. The evaluation works on any position, including one you set up yourself on
+`/analysis/`.
+
+### Settings
+
+| Setting | Default | What it does |
+|---|---|---|
+| `SESSION_IDLE_SECONDS` | `90` | seconds the page may sit unused before the browser closes itself |
+| `AGENT_MAX_TOOL_ROUNDS` | `12` | tool round-trips per turn. Interactive work is a *sequence*, and the old default of 6 cut most of them off |
+| `AGENT_MAX_ARTIFACTS` | `80` | screenshots attached per turn. Discord also budgets uploads by bytes |
+
 ## Game Review (needs a login) — ⚠️ unverified
 
 The review tool drives your paid account, so it needs a one-time login:
@@ -245,6 +346,10 @@ header is a large part of why Cloudflare challenges a valid login.
 > thin protection for a folder that also gets zipped and backed up. Set
 > `CHESS_AGENT_STATE` in `.env` to a path outside the project (for example
 > `%LOCALAPPDATA%\chess-agent\storage_state.json`).
+>
+> The interactive tools widen what that credential can be used *for*, which is
+> why they are fenced to the board and review surface — see
+> **Driving the browser** below.
 
 Then verify detection before trusting it:
 
@@ -343,10 +448,12 @@ set REVIEW_HEADLESS=0
 ```bash
 pip install -e ".[dev]"           # installs ruff + esprima
 ruff check . && ruff format --check .
-python tests/test_review_logic.py   # 55 — pure logic, no browser
+python tests/test_review_logic.py   # 59 — pure logic, no browser
+python tests/test_discord_bot.py    # 61 — the bot: chunking, access, artifacts
+python tests/test_session.py        #  7 — the navigation allow-list
+python tests/test_interact.py       #  9 — interactive tool arguments and refusals
 python tests/test_js_syntax.py      #  4 — parses every embedded JS blob
 python tests/test_js_detection.py   #  2 — runs the extractor in Node (skips if absent)
-python tests/test_discord_bot.py    # 26 — the bot: chunking, access, artifacts
 python tests/test_project_env.py    # 11 — no real secret in .env.example
 ```
 
@@ -397,8 +504,15 @@ chess-agent/
 │   ├── games.py    # get_recent_games + openings
 │   ├── profiles.py # get_player_profile
 │   ├── move_list.py # the move table, classification vocabulary, navigation
-│   ├── review.py   # the five review/screenshot tools (login needed)
+│   ├── review.py   # the five one-shot review/screenshot tools (login needed)
+│   ├── session.py  # the long-lived shared browser + its navigation allow-list
+│   ├── interact.py # the six interactive tools that drive that session
 │   └── common.py   # constants, logging, browser fingerprint
+├── spikes/         # the measurements behind the session design + live checks
+│   ├── s0_1_loop_affinity.py    # why a page needs its own event loop
+│   ├── s0_2_engine_line.py      # what chess.com does and does not expose
+│   ├── s0_3_session_live.py     # the session, end to end
+│   └── s0_4_interactive_flow.py # the six tools, 12 live checks
 ├── login_chess.py  # one-time chess.com login -> storage_state.json
 ├── calibrate_review.py  # verify detection + navigation on a real game
 ├── dump_pages.py  # full HTML of every page state -> dumps/
@@ -651,7 +765,7 @@ To keep the markup-pinned tests alive without it, `make_fixture.py` distils a
 dump into `tests/fixtures/chess_com_review_markup.json` — **18 KB, a 151×
 reduction** — keeping every fact the tests assert on and collapsing each `<svg>`
 to `<svg/>`. The tests read the fixture, not the dumps, so with `dumps/` deleted
-all 61 still pass with **no skips**. Regenerate after a fresh capture:
+they all still pass with **no skips**. Regenerate after a fresh capture:
 
 ```bash
 python dump_pages.py https://www.chess.com/game/live/184571437220
@@ -663,10 +777,12 @@ python make_fixture.py
 They are not on the runtime path, and they run in about a second:
 
 ```bash
-python tests/test_review_logic.py     # 55 tests, no browser
+python tests/test_review_logic.py     # 59 — pure logic, no browser
+python tests/test_discord_bot.py      # 61 — the Discord front end
+python tests/test_session.py          #  7 — the navigation allow-list
+python tests/test_interact.py         #  9 — interactive tool arguments
 python tests/test_js_syntax.py        #  4 — every JS blob parses
 python tests/test_js_detection.py     #  2 — the extractor in real Node
-python tests/test_discord_bot.py      # 26 — the Discord front end
 python tests/test_project_env.py      # 11 — .env hygiene
 ```
 

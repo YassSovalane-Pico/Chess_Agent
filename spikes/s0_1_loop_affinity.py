@@ -43,7 +43,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from tools.common import configure_logging, load_browser_profile, session_state_path  # noqa: E402
+from tools.common import (  # noqa: E402
+    configure_logging,
+    load_browser_profile,
+    session_state_path,
+)
 
 LOG = logging.getLogger("s0_1")
 
@@ -91,13 +95,16 @@ async def _open_then_die(box: dict) -> None:
     headed = os.getenv("REVIEW_HEADLESS", "1") == "0"
     try:
         browser = await playwright.chromium.launch(
-            channel="chrome", headless=not headed, args=LAUNCH_ARGS,
+            channel="chrome",
+            headless=not headed,
+            args=LAUNCH_ARGS,
             ignore_default_args=["--enable-automation"],
         )
     except Exception as exc:  # noqa: BLE001
         LOG.debug("no real Chrome (%s); using bundled Chromium", exc)
         browser = await playwright.chromium.launch(
-            headless=not headed, args=LAUNCH_ARGS,
+            headless=not headed,
+            args=LAUNCH_ARGS,
             ignore_default_args=["--enable-automation"],
         )
     context = await browser.new_context(**kwargs)
@@ -114,8 +121,9 @@ async def _drive_from_a_new_loop(box: dict) -> None:
     title = await asyncio.wait_for(page.evaluate(PROBE_JS), STEP_TIMEOUT)
     print(f"  loop B: title = {title!r}")
     await asyncio.wait_for(
-        page.goto(TARGET + "analysis/", wait_until="domcontentloaded",
-                  timeout=NAV_TIMEOUT),
+        page.goto(
+            TARGET + "analysis/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT
+        ),
         STEP_TIMEOUT,
     )
     print(f"  loop B: navigated to {page.url}")
@@ -218,13 +226,16 @@ async def _open_session(box: dict) -> str:
     headed = os.getenv("REVIEW_HEADLESS", "1") == "0"
     try:
         browser = await playwright.chromium.launch(
-            channel="chrome", headless=not headed, args=LAUNCH_ARGS,
+            channel="chrome",
+            headless=not headed,
+            args=LAUNCH_ARGS,
             ignore_default_args=["--enable-automation"],
         )
     except Exception as exc:  # noqa: BLE001
         LOG.debug("no real Chrome (%s); using bundled Chromium", exc)
         browser = await playwright.chromium.launch(
-            headless=not headed, args=LAUNCH_ARGS,
+            headless=not headed,
+            args=LAUNCH_ARGS,
             ignore_default_args=["--enable-automation"],
         )
     context = await browser.new_context(**kwargs)
@@ -299,8 +310,7 @@ def proposed_design() -> tuple[bool, dict, LoopThread | None]:
         return _verdict(False, "B"), {}, None
     box: dict = {}
     runner = LoopThread()
-    print(f"  private loop on thread {runner.thread.name!r}, "
-          f"id={id(runner.loop)}")
+    print(f"  private loop on thread {runner.thread.name!r}, id={id(runner.loop)}")
 
     url = runner.call(lambda: _open_session(box), 180)
     print(f"  opened {url}")
@@ -311,8 +321,10 @@ def proposed_design() -> tuple[bool, dict, LoopThread | None]:
     # rather than R.
     plan = [
         ("probe #1", lambda: _probe(box, "probe #1 (thread 1)")),
-        ("nav  ->analysis", lambda: _navigate(
-            box, TARGET + "analysis/", "nav -> analysis (thread 2)")),
+        (
+            "nav  ->analysis",
+            lambda: _navigate(box, TARGET + "analysis/", "nav -> analysis (thread 2)"),
+        ),
         ("probe #2", lambda: _probe(box, "probe #2 (thread 3)")),
         ("nav  ->", lambda: _navigate(box, TARGET, "nav -> home (thread 4)")),
         ("probe #3", lambda: _probe(box, "probe #3 (thread 5)")),
@@ -339,8 +351,10 @@ def proposed_design() -> tuple[bool, dict, LoopThread | None]:
             print(f"  FAILED {name}: {type(exc).__name__}: {exc}")
         return _verdict(False, "B -- the private loop does NOT hold up"), box, runner
 
-    print(f"\n  all {len(results)} operations succeeded, each from its own "
-          f"thread, on loop id={id(runner.loop)}")
+    print(
+        f"\n  all {len(results)} operations succeeded, each from its own "
+        f"thread, on loop id={id(runner.loop)}"
+    )
     return _verdict(True, "B -- the private-loop design works"), box, runner
 
 
@@ -424,9 +438,13 @@ def main() -> int:
     r_ok = the_race(box, runner) if b_ok else False
 
     _box("SUMMARY")
-    print(f"  A  page survives its own loop ....... {'no  (hazard real)' if a_ok else 'yes (UNEXPECTED)'}")
+    print(
+        f"  A  page survives its own loop ....... {'no  (hazard real)' if a_ok else 'yes (UNEXPECTED)'}"
+    )
     print(f"  B  private loop + serialised calls .... {'yes' if b_ok else 'NO'}")
-    print(f"  R  unlocked concurrent calls ......... {'race is real' if r_ok else 'no bite this run'}")
+    print(
+        f"  R  unlocked concurrent calls ......... {'race is real' if r_ok else 'no bite this run'}"
+    )
 
     if b_ok and r_ok:
         print("\n  CONCLUSION: the design holds, with one hard requirement attached.")

@@ -56,6 +56,7 @@ from google import genai
 import agent
 import project_env
 from tools import configure_logging
+from tools.session import get_session
 
 project_env.load_env()
 # `configure_logging`, not `logging.basicConfig`: importing `agent` above has
@@ -143,8 +144,19 @@ USAGE_EXAMPLES = """\
   `@ChessAgent show me the last 5 games of hikaru`
   `@ChessAgent how accurate was I?`
 
-Reviews launch a real browser and take 30s-2min. I edit one message as I go,
-and attach the screenshots -- you never need to open a file path.
+**I can drive the browser too**, so you can walk through a game a move at a
+time -- the page stays open between messages:
+
+  `@ChessAgent open the review of https://www.chess.com/game/live/184571437220`
+  `@ChessAgent go forward 3 moves`
+  `@ChessAgent what does the engine think of this position?`
+  `@ChessAgent screenshot that`
+  `@ChessAgent step back two`
+  `@ChessAgent close the browser`
+
+Reviews and page loads launch a real browser and take 30s-2min. I edit one
+message as I go, and attach the screenshots -- you never need to open a file
+path.
 """
 
 # Why the command list is generated rather than written down: a help text that
@@ -265,7 +277,22 @@ def describe_artifact(path: Path) -> str:
         )
     if stem.startswith("summary"):
         return "review summary -- accuracy, full tally, coach commentary"
-    return "review screenshot"
+    # `shot_<region>[_<label>]_<stamp>` -- take_screenshot. Without this branch
+    # every interactive frame was captioned "review screenshot", which is a lie:
+    # they are whatever the user asked to see, on a puzzle page or a lesson, and
+    # telling the user it is a review screenshot is worse than saying nothing.
+    shot = re.match(r"shot_([a-z]+)(?:_(.+?))?_\d{8}_\d{6}$", stem)
+    if shot:
+        region = shot.group(1)
+        label = (shot.group(2) or "").replace("_", " ").strip()
+        where = {
+            "auto": "the board and the review panel",
+            "board": "the board",
+            "sidebar": "the side panel",
+            "viewport": "the whole page",
+        }.get(region, "the page")
+        return f"{where}{' -- ' + label if label else ''}"
+    return "screenshot"
 
 
 # Codepoints that must never be the FIRST character of a chunk: a combining
@@ -598,6 +625,14 @@ class ChessBot(commands.Bot):
         for task in list(self._watchdogs):
             task.cancel()
         self._watchdogs.clear()
+        # Shut the browser down on the way out. The idle TTL would get there
+        # eventually, but the process is ending: leaving a Chromium and its
+        # driver to be reaped by the OS on every restart is a slow leak of
+        # processes, and the owner stops noticing.
+        try:
+            await asyncio.to_thread(get_session().close)
+        except Exception:  # noqa: BLE001 - shutdown must not fail
+            _LOG.debug("closing the session browser during shutdown", exc_info=True)
         await super().close()
 
     # -- lifecycle ---------------------------------------------------------
@@ -727,9 +762,23 @@ class ChessBot(commands.Bot):
         if not await self._refuse_if_not_permitted(ctx):
             return
         busy = self._browser_lock.locked()
+        # The session outlives the gate on purpose, so "the lock is free" and
+        # "no browser is running" are different questions and reporting only the
+        # first is misleading: a page can be open and waiting while the gate sits
+        # idle. Report both.
+        session = get_session().describe()
         lines = [
             f"model: `{agent.MODEL}`",
             f"browser: {'BUSY (one review at a time)' if busy else 'free'}",
+            (
+                f"session: {'OPEN on ' + session['url'] if session['open'] else 'closed'}"
+                + (
+                    f" (idle {session['idle_seconds_ago']}s of "
+                    f"{session['idle_ttl']}s, closes itself)"
+                    if session["open"]
+                    else ""
+                )
+            ),
             f"queued for the browser: {self._queued}",
             f"conversations: {len(self._sessions)} (cap {MAX_SESSIONS})",
             f"turn limit: {int(TURN_TIMEOUT_SECONDS)}s"

@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import agent
 import discord_bot
+from tools import interact as tools_interact
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -237,7 +238,18 @@ def test_captions_describe_the_frame_without_guessing():
             "review summary -- accuracy, full tally, coach commentary"
         ),
         "move_m2_ply3_20260101_120000.png": "the position after move 2 (ply 3)",
-        "mystery_20260101.png": "review screenshot",
+        # take_screenshot's naming: shot_<region>[_<label>]_<stamp>. Without a
+        # branch for these, every interactive frame was captioned "review
+        # screenshot" -- a lie, since they are whatever the user asked to see,
+        # possibly on a puzzle page or a lesson.
+        "shot_auto_20260101_120000.png": "the board and the review panel",
+        "shot_board_20260101_120000.png": "the board",
+        "shot_sidebar_20260101_120000.png": "the side panel",
+        "shot_viewport_20260101_120000.png": "the whole page",
+        "shot_board_after_e5_20260101_120000.png": "the board -- after e5",
+        # An unrecognised name says nothing about what is in it. "review
+        # screenshot" was a guess, and a wrong one for any interactive frame.
+        "mystery_20260101.png": "screenshot",
     }
     for name, expected in cases.items():
         assert discord_bot.describe_artifact(Path(name)) == expected, name
@@ -371,13 +383,36 @@ def test_only_one_browser_at_a_time_and_the_queue_counter_balances():
 # ---------------------------------------------------------------------------
 
 
-def test_the_agent_keeps_the_seven_tools_and_the_export_contract():
-    """main.py re-exports these; the CLI and the bot must not drift apart."""
+def test_the_agent_keeps_the_thirteen_tools_and_the_export_contract():
+    """main.py re-exports these; the CLI and the bot must not drift apart.
+
+    The count was 7 and is now 13: the six interactive browser tools joined the
+    seven review/HTTP ones. It is asserted as a number because that is what
+    catches a tool being added without the front end being updated -- but the
+    name list below is the real check, and it is what a future addition has to
+    touch.
+    """
     import main
 
+    expected = {
+        "get_recent_games",
+        "get_player_profile",
+        "review_game_screenshots",
+        "get_review_state",
+        "get_moves",
+        "get_coach_commentary",
+        "screenshot_game_move",
+        "open_chess_page",
+        "where_am_i",
+        "move_board",
+        "goto_move_in_game",
+        "take_screenshot",
+        "close_browser_session",
+    }
     assert set(main.FUNCTION_MAP) == set(agent.FUNCTION_MAP)
     assert {f.__name__ for f in agent.TOOLS} == set(agent.FUNCTION_MAP)
-    assert len(agent.TOOLS) == 7, agent.TOOLS
+    assert set(agent.FUNCTION_MAP) == expected, sorted(agent.FUNCTION_MAP)
+    assert len(agent.TOOLS) == 13, agent.TOOLS
     for name, func in agent.FUNCTION_MAP.items():
         assert not inspect.iscoroutinefunction(func), (
             f"{name} is async; a bot runs it in a worker thread where the tools' "
@@ -385,6 +420,40 @@ def test_the_agent_keeps_the_seven_tools_and_the_export_contract():
             f"coroutine and JSON-serialise to nothing"
         )
         assert func.__doc__ and "Args:" in func.__doc__, name
+
+
+def test_every_interactive_tool_is_in_browser_tools():
+    """Each one drives the shared browser, so each takes the gate.
+
+    Without this a tool that launches a Chromium would run outside the lock and
+    the Discord bot's promise -- one browser at a time -- would quietly stop
+    holding.
+    """
+    interactive = {f.__name__ for f in tools_interact.INTERACTIVE_TOOLS}
+    assert interactive <= set(agent.FUNCTION_MAP), interactive - set(agent.FUNCTION_MAP)
+    missing = interactive - set(agent.BROWSER_TOOLS)
+    assert not missing, f"not gated behind the browser lock: {sorted(missing)}"
+    # The HTTP tools must stay outside it, or a two-second lookup queues behind
+    # a two-minute page load.
+    assert "get_recent_games" not in agent.BROWSER_TOOLS
+    assert "get_player_profile" not in agent.BROWSER_TOOLS
+
+
+def test_the_system_prompt_teaches_the_model_when_to_use_each_half():
+    """The prompt was built entirely on "the review tools answer three
+    questions -- pick the narrowest one". Adding six interactive tools without
+    saying how they differ produces a model that still calls get_review_state
+    for everything, which is the failure this whole addition risks."""
+    instruction = agent.SYSTEM_INSTRUCTION
+    for tool in ("open_chess_page", "move_board", "take_screenshot", "where_am_i"):
+        assert tool in instruction, f"{tool} is not mentioned in the prompt"
+    assert "one-shot" in instruction.lower()
+    # The honesty rules the interactive tools depend on.
+    assert "verified" in instruction
+    assert "already_at" in instruction
+    assert "engine_eval" in instruction
+    # And it must not promise a multi-move engine line the site does not show.
+    assert "does NOT expose a multi-move engine line" in instruction
 
 
 def test_the_discord_platform_note_stops_the_model_printing_paths():
@@ -1187,6 +1256,15 @@ def test_only_browser_tools_take_the_browser_lock():
         "get_moves",
         "get_review_state",
         "get_coach_commentary",
+        # The interactive tools take the same gate: each drives the shared
+        # browser session. The gate covers the CALL, not the session -- the
+        # session outlives the call deliberately, and serialises itself.
+        "open_chess_page",
+        "where_am_i",
+        "move_board",
+        "goto_move_in_game",
+        "take_screenshot",
+        "close_browser_session",
     } == set(agent.BROWSER_TOOLS)
 
     bot = discord_bot.ChessBot()
