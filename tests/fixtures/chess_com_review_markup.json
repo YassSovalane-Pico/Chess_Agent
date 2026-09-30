@@ -1,0 +1,384 @@
+{
+ "_readme": "Minimal extract of a real dump_pages.py run, produced from dumps/ so the markup-pinned tests stay live without 2.7 MB of HTML. Each <svg> element is collapsed to <svg/> -- the path data is 99% of the bytes and 0% of the assertions. Everything asserted on is preserved: the data-node plies, the --color-classification-* styles, the figurine spans, both tally columns, the coach panel and its word-by-word speech, and the accuracy and player markup. Source game: 29 plies. Re-capture with python dump_pages.py <link>, then regenerate with python make_fixture.py.",
+ "move_cells": [
+  {
+   "node": "0-0",
+   "colour": "white-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content selected\" style=\"color: var(--color-classification-book)\">g4 </span>"
+  },
+  {
+   "node": "0-1",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">e6 </span>"
+  },
+  {
+   "node": "0-2",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess bishop-white \" data-figurine=\"B\"></span> g2 </span>"
+  },
+  {
+   "node": "0-3",
+   "colour": "black-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-mistake)\">d6 </span>"
+  },
+  {
+   "node": "0-4",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">c4 </span>"
+  },
+  {
+   "node": "0-5",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">d5 </span>"
+  },
+  {
+   "node": "0-6",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">cxd5 </span>"
+  },
+  {
+   "node": "0-7",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">exd5 </span>"
+  },
+  {
+   "node": "0-8",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess queen-white \" data-figurine=\"Q\"></span> b3 </span>"
+  },
+  {
+   "node": "0-9",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">c6 </span>"
+  },
+  {
+   "node": "0-10",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">d4 </span>"
+  },
+  {
+   "node": "0-11",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-black \" data-figurine=\"N\"></span> f6 </span>"
+  },
+  {
+   "node": "0-12",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">g5 </span>"
+  },
+  {
+   "node": "0-13",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-black \" data-figurine=\"N\"></span> e4 </span>"
+  },
+  {
+   "node": "0-14",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">h4 </span>"
+  },
+  {
+   "node": "0-15",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-black \" data-figurine=\"N\"></span> d6 </span>"
+  },
+  {
+   "node": "0-16",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-white \" data-figurine=\"N\"></span> c3 </span>"
+  },
+  {
+   "node": "0-17",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess queen-black \" data-figurine=\"Q\"></span> b6 </span>"
+  },
+  {
+   "node": "0-18",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-white \" data-figurine=\"N\"></span> f3 </span>"
+  },
+  {
+   "node": "0-19",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess queen-black \" data-figurine=\"Q\"></span> xb3 </span>"
+  },
+  {
+   "node": "0-20",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">axb3 </span>"
+  },
+  {
+   "node": "0-21",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess bishop-black \" data-figurine=\"B\"></span> e7 </span>"
+  },
+  {
+   "node": "0-22",
+   "colour": "white-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\"><span class=\"icon-font-chess knight-white \" data-figurine=\"N\"></span> a4 </span>"
+  },
+  {
+   "node": "0-23",
+   "colour": "black-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-blunder)\"><span class=\"icon-font-chess knight-black \" data-figurine=\"N\"></span> e4 </span>"
+  },
+  {
+   "node": "0-24",
+   "colour": "white-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-brilliant)\"><span class=\"icon-font-chess knight-white \" data-figurine=\"N\"></span> b6 </span>"
+  },
+  {
+   "node": "0-25",
+   "colour": "black-move",
+   "inner": "<span class=\"node-highlight-content offset-for-annotation-icon\">axb6 </span>"
+  },
+  {
+   "node": "0-26",
+   "colour": "white-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-best)\"><span class=\"icon-font-chess rook-white \" data-figurine=\"R\"></span> xa8 </span>"
+  },
+  {
+   "node": "0-27",
+   "colour": "black-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-mistake)\">O-O </span>"
+  },
+  {
+   "node": "0-28",
+   "colour": "white-move",
+   "inner": "<span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content\" style=\"color: var(--color-classification-best)\"><span class=\"icon-font-chess rook-white \" data-figurine=\"R\"></span> xb8 </span>"
+  }
+ ],
+ "clock_stamps": [
+  {
+   "ply": "1",
+   "centiseconds": "8"
+  },
+  {
+   "ply": "2",
+   "centiseconds": "30"
+  },
+  {
+   "ply": "3",
+   "centiseconds": "6"
+  },
+  {
+   "ply": "4",
+   "centiseconds": "9"
+  },
+  {
+   "ply": "5",
+   "centiseconds": "5"
+  },
+  {
+   "ply": "6",
+   "centiseconds": "5"
+  },
+  {
+   "ply": "7",
+   "centiseconds": "28"
+  },
+  {
+   "ply": "8",
+   "centiseconds": "9"
+  },
+  {
+   "ply": "9",
+   "centiseconds": "3"
+  },
+  {
+   "ply": "10",
+   "centiseconds": "18"
+  },
+  {
+   "ply": "11",
+   "centiseconds": "21"
+  },
+  {
+   "ply": "12",
+   "centiseconds": "18"
+  },
+  {
+   "ply": "13",
+   "centiseconds": "13"
+  },
+  {
+   "ply": "14",
+   "centiseconds": "22"
+  },
+  {
+   "ply": "15",
+   "centiseconds": "11"
+  },
+  {
+   "ply": "16",
+   "centiseconds": "60"
+  },
+  {
+   "ply": "17",
+   "centiseconds": "121"
+  },
+  {
+   "ply": "18",
+   "centiseconds": "25"
+  },
+  {
+   "ply": "19",
+   "centiseconds": "19"
+  },
+  {
+   "ply": "20",
+   "centiseconds": "21"
+  },
+  {
+   "ply": "21",
+   "centiseconds": "1"
+  },
+  {
+   "ply": "22",
+   "centiseconds": "13"
+  },
+  {
+   "ply": "23",
+   "centiseconds": "19"
+  },
+  {
+   "ply": "24",
+   "centiseconds": "37"
+  },
+  {
+   "ply": "25",
+   "centiseconds": "65"
+  },
+  {
+   "ply": "26",
+   "centiseconds": "100"
+  },
+  {
+   "ply": "27",
+   "centiseconds": "1"
+  },
+  {
+   "ply": "28",
+   "centiseconds": "45"
+  },
+  {
+   "ply": "29",
+   "centiseconds": "24"
+  }
+ ],
+ "whole_move_numbers": [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15"
+ ],
+ "row_sample": "<div class=\"main-line-row move-list-row light-row\" data-whole-move-number=\"1\">1.  <div data-node=\"0-0\" class=\"node white-move main-line-ply\"><span class=\"node-annotation-icon\">\n    <svg/>\n  </span> <span class=\"node-highlight-content selected\" style=\"color: var(--color-classification-book)\">g4 </span></div>  <div",
+ "coach_panel": "<div class=\"move-feedback-box-component\"><!----> <div><div class=\"move-feedback-box-content\"><div class=\"move-feedback-box-icon\">\n    <svg/>\n  </div> <div class=\"move-feedback-box-move\"><!----> <!----> <div class=\"move-feedback-box-description\">Book</div></div> <a target=\"_blank\" class=\"score-text-score score-text-negative move-feedback-box-negative move-feedback-box-score\" href=\"//support.chess.com/article/656-what-do-the-computer-evaluation-numbers-mean-like-225\">-1.07</a></div> <div class=\"move-feedback-box-row\"><div class=\"move-feedback-speech-text-component\"><span class=\"move-feedback-speech-text-tw\" aria-hidden=\"true\"><span>You\u2019re preparing</span><span class=\"move-feedback-speech-text-word\"><span></span><span class=\"move-feedback-speech-text-hidden\"></span></span><span class=\"move-feedback-speech-text-hidden\"> to unleash the bishop! It\u2019s almost ready to join the game.</span></span></div></div> <div class=\"move-feedback-last-book-move-component\" whole-move-number=\"1\"><div class=\"move-feedback-last-book-move-bubble cc-paragraph-medium\"><span class=\"move-feedback-last-book-move-title\"><a href=\"/openings/Grob-Opening\" data-cy=\"coach-commentary-opening-link\">Grob Opening</a></span> <span class=\"move-feedback-last-book-move-stats\">Played <a href=\"/analysis/explorer?color=white&amp;gameSource=own&amp;gameType=all&amp;moveList=g4&amp;ne=1&amp;ply=1\" target=\"_blank\">159</a> times as White. 68% win rate.</span></div> <!----></div></div></div>",
+ "coach_speech": "row\"><div class=\"move-feedback-speech-text-component\"><span class=\"move-feedback-speech-text-tw\" aria-hidden=\"true\"><span>You\u2019re preparing</span><span class=\"move-feedback-speech-text-word\"><span></span><span class=\"move-feedback-speech-text-hidden\"></span></span><span class=\"move-feedback-speech-text-hidden\"> to unleash the bishop! It\u2019s almost ready to join the game.</span></span></div></div> <div class=\"move-feedback-last-book-move-component\" whole-move-number=\"1\"><div class=\"move-feedback-last-book-move-bubble cc-paragraph-medium\"><span class=\"move-feedback-last-book-move-title\"><a href=\"/openings/Grob-Opening\" data-cy=\"coach-commentary-opening-link\">Grob Opening</a></span> <span class=\"move-feedback-last-book-move-stats\">Played <a href=\"/analysis",
+ "summary_accuracy_row": "<div class=\"game-overview-row\"><span class=\"cc-paragraph-medium-bold game-overview-row-title\"></span> <span class=\"game-overview-row-item game-overview-player\">YassDubov</span> <span class=\"game-overview-row-item game-overview-player\">arunprasad8831</span></div> <div class=\"game-overview-row\"><span class=\"cc-paragraph-medium-bold game-overview-row-title\">Players</span> <div class=\"game-overview-row-item\"><div class=\"overview-avatar-component\"><img class=\"overview-avatar-userAvatar overview-avatar-winner\" src=\"https://www.chess.com/bundles/web/images/user-image.svg\" srcset=\"https://images.chesscomfiles.com/uploads/v1/user/510593783.aab9ce44.100x100o.cc2b77c1770a.jpg, https://images.chesscomfiles.com/uploads/v1/user/510593783.aab9ce44.100x100o.cc2b77c1770a@2x.jpg 2x\" width=\"64\" height=\"64\" alt=\"avatar\"></div></div> <div class=\"game-overview-row-item\"><div class=\"overview-avatar-component\"><img class=\"overview-avatar-userAvatar\" src=\"https://www.chess.com/bundles/web/images/user-image.svg\" srcset=\"https://images.chesscomfiles.com/uploads/v1/user/56723918.f785ff72.100x100o.3e7dc6c96af6.png, https://images.chesscomfiles.com/uploads/v1/user/56723918.f785ff72.100x100o.3e7dc6c96af6@2x.png 2x\" width=\"64\" height=\"64\" alt=\"avatar\"></div></div></div> <div class=\"game-overview-row\"><span class=\"cc-paragraph-medium-bold game-overview-row-title\"><!----> Accuracy</span> <div class=\"game-overview-row-item\"><div class=\"review-rating-component review-rating-white\"><!----> <span>94.7</span></div></div> <div class=\"game-overview-row-item\"><div class=\"review-rating-component review-rating-black\"><!----> <span>76.1</span></div></div></div> <hr>",
+ "summary_tally_row": "<div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Brilliant</span></div> <span class=\"tally-row-value analysis-brilliant\">1</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-brilliant\">0</span></div></div></div><div class=\"\"><div class=\"\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Best</span></div> <span class=\"tally-row-value analysis-bestMove\">5</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-bestMove\">6</span></div></div></div><div class=\"\"><div class=\"\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Excellent</span></div> <span class=\"tally-row-value analysis-excellent\">2</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-excellent\">1</span></div></div></div><div class=\"tallies-extraWrapper tallies-extraWrapperCollapsed\"><div class=\"tallies-extraWrapperInner\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Great</span></div> <span class=\"tally-row-value analysis-greatFind\">0</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-greatFind\">0</span></div></div></div><div class=\"tallies-extraWrapper tallies-extraWrapperCollapsed\"><div class=\"tallies-extraWrapperInner\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Book</span></div> <span class=\"tally-row-value analysis-book\">1</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-book\">0</span></div></div></div><div class=\"tallies-extraWrapper tallies-extraWrapperCollapsed\"><div class=\"tallies-extraWrapperInner\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Good</span></div> <span class=\"tally-row-value analysis-good\">4</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-good\">0</span></div></div></div><div class=\"tallies-extraWrapper tallies-extraWrapperCollapsed\"><div class=\"tallies-extraWrapperInner\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Inaccuracy</span></div> <span class=\"tally-row-value analysis-inaccuracy\">2</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-inaccuracy\">3</span></div></div></div><div class=\"\"><div class=\"\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Mistake</span></div> <span class=\"tally-row-value analysis-mistake\">0</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-mistake\">2</span></div></div></div><div class=\"\"><div class=\"\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Miss</span></div> <span class=\"tally-row-value analysis-miss\">0</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-miss\">1</span></div></div></div><div class=\"\"><div class=\"\"><div class=\"tally-row-row\"><div class=\"cc-paragraph-medium-bold tally-row-rowTitle\"><span><!----> Blunder</span></div> <span class=\"tally-row-value analysis-blunder\">0</span> <span class=\"tally-row-glyph\"><span>\n    <svg/>\n  </span></span> <span class=\"tally-row-value analysis-blunder\">1</span></div></div></div> <div class=\"tallies-collapse\"><button aria-label=\"Expand\" class=\"cc-icon-button-component cc-icon-button-x-small cc-icon-button-ghost cc-bg-ghost\" type=\"button\"><!----> <span aria-hidden=\"true\" class=\"cc-icon-glyph_ef7806d cc-icon-size-24_ef7806d\"><svg/></span> </button></div></div> <hr>",
+ "summary_players": "<div class=\"player-tagline\"><div class=\"cc-user-block-component cc-user-block-boldest cc-user-block-small\"><!----> <!----> <div class=\"cc-text-medium-bold cc-user-username-component cc-user-username-boldest cc-user-block-username\" data-test-element=\"user-tagline-username\">arunprasad8831</div> <div class=\"cc-text-medium cc-user-rating-boldest\" data-test-element=\"user-tagline-rating\">\n    (2144)\n  </div> <div class=\"cc-country-flag-component country-in cc-country-flag-small\"><!----></div> <!----> </div> <wc-captured-pieces board-id=\"...\" class=\"\" player-color=\"2\">\n      <div>\n        <span class=\"captured-pieces-cpiece captured-pieces-score\"></span></div>\n    </wc-captured-pieces></div> <div class=\"move-time-time move-time-dark move-time-iconless move-time-inactive player-clock\"><!----> <div class=\"move-time-content move-time-monospace\">10:00</div></div></div>",
+ "tally_pairs": [
+  [
+   "brilliant",
+   "1"
+  ],
+  [
+   "brilliant",
+   "0"
+  ],
+  [
+   "bestMove",
+   "5"
+  ],
+  [
+   "bestMove",
+   "6"
+  ],
+  [
+   "excellent",
+   "2"
+  ],
+  [
+   "excellent",
+   "1"
+  ],
+  [
+   "greatFind",
+   "0"
+  ],
+  [
+   "greatFind",
+   "0"
+  ],
+  [
+   "book",
+   "1"
+  ],
+  [
+   "book",
+   "0"
+  ],
+  [
+   "good",
+   "4"
+  ],
+  [
+   "good",
+   "0"
+  ],
+  [
+   "inaccuracy",
+   "2"
+  ],
+  [
+   "inaccuracy",
+   "3"
+  ],
+  [
+   "mistake",
+   "0"
+  ],
+  [
+   "mistake",
+   "2"
+  ],
+  [
+   "miss",
+   "0"
+  ],
+  [
+   "miss",
+   "1"
+  ],
+  [
+   "blunder",
+   "0"
+  ],
+  [
+   "blunder",
+   "1"
+  ]
+ ],
+ "analysis_facts": {
+  "has_data_node_cells": false,
+  "has_color_classification": false,
+  "classification_word_counts": {
+   "inaccuracy": 25,
+   "bestMove": 41,
+   "greatFind": 2,
+   "brilliant": 10,
+   "blunder": 7
+  }
+ }
+}

@@ -1,0 +1,9 @@
+google-genai
+requests
+python-dotenv
+playwright
+discord.py>=2.4
+# The browser binaries are NOT installed by this file. After installing, run:
+#     playwright install chrome
+# or, if you do not have Google Chrome installed:
+#     playwright install chromium

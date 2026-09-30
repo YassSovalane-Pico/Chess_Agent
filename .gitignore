@@ -1,0 +1,19 @@
+.env
+.env.local
+.env.*.local
+__pycache__/
+.venv/
+*.pyc
+storage_state.json
+.browser_profile.json
+screenshots/
+dumps/
+tests/fixtures/*.tmp
+
+# Spike output is a CAPTURE, not a dependency -- the same rule as dumps/.
+# spikes/s0_1_loop_affinity.py, s0_3_session_live.py and s0_4_interactive_flow.py
+# are committed because they are the evidence behind tools/session.py and
+# tools/interact.py. What they write (the DOM dumps from s0_2) is not: distil it
+# into tests/fixtures/ the way make_fixture.py does, and commit that instead.
+spikes/s0_2/
+.ruff_cache/

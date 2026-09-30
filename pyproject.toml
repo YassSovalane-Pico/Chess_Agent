@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess-agent"
+version = "0.3.1"
+description = "A chess.com assistant that profiles players, lists games and captures Game Review screenshots."
+requires-python = ">=3.11"
+# Keep in step with requirements.txt -- requirements.txt stays the thing a
+# beginner actually runs, this is the machine-readable copy.
+dependencies = [
+    "google-genai",
+    "requests",
+    "python-dotenv",
+    "playwright",
+    # `pip install .` used to build a wheel with no discord.py in it, because
+    # only requirements.txt -- the file a beginner actually runs -- listed it.
+    "discord.py>=2.4",
+]
+
+[project.optional-dependencies]
+# Tests and linting are not runtime requirements, but the JS syntax test needs
+# esprima: the DOM readers ship as Python strings, so a JS typo would otherwise
+# surface only as a swallowed in-browser failure.
+dev = ["ruff", "esprima"]
+
+[tool.setuptools]
+packages = ["tools"]
+# The four top-level modules are the program. `packages = ["tools"]` on its own
+# built a wheel containing the tools and none of the front ends, so
+# `pip install .` gave you an importable library that could not be run.
+py-modules = ["agent", "discord_bot", "main", "project_env"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+# The rule set that was previously implied by the editor. Anything not listed
+# here is not enforced, so keep it in step with what CI/the editor should flag.
+select = ["E", "F", "W", "I", "DTZ", "S", "BLE", "RUF"]
+# Line length is enforced by `ruff format`, which reflows every line it can.
+# What remains are unsplittable payloads -- error-message literals and the
+# JavaScript embedded in tools/move_list.py -- where E501 has no actionable
+# fix and only pushes you to mangle readable text.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert; that is what they are for.
+"tests/*" = ["S101"]
+# The Gemini system instruction is one multi-line string, so a noqa cannot be
+# placed on the offending line without editing the prompt itself. The
+# heavy-minus sign is deliberate: it is the draw icon, chosen because a plain
+# hyphen is ambiguous next to the other two glyphs.
+"main.py" = ["RUF001"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008-style call-in-default is not used; blind excepts are the concern and
+# are handled per-site with a documented noqa instead of globally.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
+[tool.ruff.format]
+docstring-code-format = false
